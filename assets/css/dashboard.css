@@ -678,6 +678,9 @@
 .price-status.live .price-status-dot { background: var(--green); }
 .price-status.live { color: var(--green); }
 
+.price-status.cached .price-status-dot { background: var(--orange); }
+.price-status.cached { color: var(--orange); }
+
 .price-status.error .price-status-dot { background: var(--red); }
 .price-status.error { color: var(--text-muted); }
 
