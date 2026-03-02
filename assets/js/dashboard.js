@@ -161,6 +161,127 @@
     { asset: 'Crypto-Linked',          current: 'Small (~2-3%)',      dalio: 'Not included', status: 'neutral' }
   ];
 
+  /* ================================================================
+     REBALANCING RULES & SLEEVE GUIDE
+  ================================================================ */
+  var REBAL_RULES = [
+    {
+      icon: '📅',
+      title: 'Calendar Rebalance',
+      body: 'Dalio-aligned portfolios rebalance on a <strong>fixed schedule</strong> — typically quarterly or semi-annually. This removes emotion from the process. Pick a date (e.g., Jan 1, Apr 1, Jul 1, Oct 1) and check every sleeve against its target band.'
+    },
+    {
+      icon: '📏',
+      title: 'Band-Based Triggers',
+      body: 'If any sleeve drifts <strong>more than 5 percentage points</strong> from its target midpoint between scheduled dates, rebalance immediately. This catches large market moves — like a tech crash or gold spike — before they distort the portfolio\'s risk balance.'
+    },
+    {
+      icon: '🔄',
+      title: 'Sell Winners, Buy Losers',
+      body: 'Rebalancing is inherently <strong>contrarian</strong>. When equities surge, you trim them and buy bonds or commodities that have lagged. When bonds rally in a flight to safety, you trim and buy beaten-down equities. This is the mechanical edge of risk parity.'
+    },
+    {
+      icon: '💰',
+      title: 'New Cash Priority',
+      body: 'When adding fresh capital, <strong>direct it to the most underweight sleeve first</strong>. This is the least disruptive way to rebalance — no selling required, no tax events triggered. Only sell to rebalance when new cash alone cannot close the gap.'
+    },
+    {
+      icon: '🧱',
+      title: 'Build Missing Sleeves First',
+      body: 'Brian\'s portfolio currently has <strong>zero bonds and zero broad commodities</strong>. Before fine-tuning existing sleeves, priority #1 is establishing the missing building blocks — even a small starter position in TLT or AGG begins reducing concentrated risk.'
+    },
+    {
+      icon: '🎯',
+      title: 'Risk-Weight, Not Dollar-Weight',
+      body: 'Dalio\'s key insight: bonds need <strong>more capital</strong> because they have lower volatility. Equities need less. A 55% bond / 30% equity / 15% real-asset split is designed so each sleeve contributes <strong>roughly equal risk</strong> to the portfolio.'
+    }
+  ];
+
+  var REBAL_SLEEVES = [
+    {
+      tag: 'EQUITIES',
+      tagBg: 'rgba(96,165,250,0.12)',
+      tagColor: '#60a5fa',
+      title: 'Equities Sleeve — Target ~30%',
+      meta: '~30%',
+      metaColor: '#60a5fa',
+      content: '<p><strong>Current state:</strong> Brian is massively overweight equities at ~85%+, and the equity exposure is concentrated in high-beta U.S. growth/tech names.</p>' +
+        '<p><strong>Rebalancing actions:</strong></p>' +
+        '<ul>' +
+          '<li><strong>Trim to target:</strong> Over time, reduce total equity weight toward 25-35% of portfolio value. The surplus funds the missing sleeves (bonds, commodities).</li>' +
+          '<li><strong>Diversify within equities:</strong> Shift from 100% single-name growth stocks toward a mix of broad index (VTI), international (VXUS), and value (VTV). Keep high-conviction names (NVDA, CDNS) but cap them at reasonable individual weights (3-5% each).</li>' +
+          '<li><strong>Satellites stay small:</strong> Speculative names (RCAT, RKLB, HIVE) should total no more than 5-8% of the equity sleeve. If they surge, trim profits and redeploy to underweight sleeves.</li>' +
+          '<li><strong>When equities rally:</strong> This is when you trim — sell into strength and replenish bonds and real assets that have lagged. Dalio\'s discipline requires selling what has worked well.</li>' +
+        '</ul>'
+    },
+    {
+      tag: 'BONDS',
+      tagBg: 'rgba(34,197,94,0.12)',
+      tagColor: '#22c55e',
+      title: 'Bonds Sleeve — Target ~55%',
+      meta: '~55%',
+      metaColor: '#22c55e',
+      content: '<p><strong>Current state:</strong> Brian has <strong>zero bond exposure</strong>. This is the single largest gap in the portfolio from a Dalio perspective.</p>' +
+        '<p><strong>Replenishment priority:</strong></p>' +
+        '<ul>' +
+          '<li><strong>Step 1 — Start with short-term Treasuries (SGOV/SHV):</strong> These earn yield (~4-5%) with minimal price risk. Park new cash here as a staging area while building the full bond position.</li>' +
+          '<li><strong>Step 2 — Add intermediate Treasuries (IEF):</strong> 7-10 year Treasuries are the backbone of the All-Weather bond sleeve. They rally meaningfully when growth slows and the Fed cuts rates.</li>' +
+          '<li><strong>Step 3 — Add long-term Treasuries (TLT):</strong> 20+ year bonds are the most powerful recession hedge. They can gain 30-40% in a deflationary crisis. This is the "ballast" that protects against equity crashes.</li>' +
+          '<li><strong>Step 4 — Consider TIPS (TIP/SCHP):</strong> Inflation-linked bonds protect against the scenario where inflation erodes nominal bond returns. A small allocation adds another uncorrelated return stream.</li>' +
+          '<li><strong>When bonds sell off:</strong> Buy more. Bond sell-offs (rising rates) are when this sleeve gets cheaper — and Dalio\'s rebalancing discipline says you add to what has fallen, not chase what has risen.</li>' +
+        '</ul>'
+    },
+    {
+      tag: 'GOLD',
+      tagBg: 'rgba(245,200,66,0.12)',
+      tagColor: '#f5c842',
+      title: 'Precious Metals Sleeve — Target ~7.5%',
+      meta: '~7.5%',
+      metaColor: '#f5c842',
+      content: '<p><strong>Current state:</strong> GLD and SLV provide some real-asset exposure but represent a small slice of the portfolio. Brian is near the right idea but undersized relative to All-Weather targets.</p>' +
+        '<p><strong>Rebalancing actions:</strong></p>' +
+        '<ul>' +
+          '<li><strong>Size to target:</strong> Gold should be approximately 7.5% of the total portfolio. Silver can complement but is more volatile and industrial — keep it smaller than gold.</li>' +
+          '<li><strong>When gold spikes (crisis/inflation):</strong> Trim. Gold often surges during exactly the moments when equities and bonds are cheap. Taking profits from gold to buy beaten-down stocks or bonds is classic All-Weather rebalancing.</li>' +
+          '<li><strong>When gold drops (risk-on rallies):</strong> Add. Gold tends to underperform during euphoric bull markets — exactly when it becomes cheapest insurance for the next downturn.</li>' +
+          '<li><strong>Role in the portfolio:</strong> Gold is Dalio\'s primary "store of value" hedge against currency debasement and monetary disorder. It\'s not about gold going up — it\'s about gold holding value when paper money loses it.</li>' +
+        '</ul>'
+    },
+    {
+      tag: 'CMDTY',
+      tagBg: 'rgba(251,146,60,0.12)',
+      tagColor: '#fb923c',
+      title: 'Broad Commodities Sleeve — Target ~7.5%',
+      meta: '~7.5%',
+      metaColor: '#fb923c',
+      content: '<p><strong>Current state:</strong> Brian has <strong>no broad commodity exposure</strong>. Gold and silver alone do not cover the full inflation-hedge spectrum.</p>' +
+        '<p><strong>Replenishment priority:</strong></p>' +
+        '<ul>' +
+          '<li><strong>Add a diversified commodity ETF (BCI, DJP, GSG):</strong> These track baskets of energy, metals, and agriculture — the "stuff" economy that Dalio says you want to own when financial assets are being devalued.</li>' +
+          '<li><strong>Consider energy exposure (XLE or energy commodity ETFs):</strong> Energy is a critical inflation hedge and often moves opposite to bonds and growth stocks, adding genuine diversification.</li>' +
+          '<li><strong>When commodities spike:</strong> Trim and redeploy to bonds or equities. Commodity spikes typically coincide with inflation shocks that hammer other asset classes — rebalancing captures this divergence.</li>' +
+          '<li><strong>When commodities drop:</strong> Add. Cheap commodities are cheap insurance against the next inflation cycle. Dalio\'s systematic approach means buying what\'s out of favor.</li>' +
+          '<li><strong>Why this matters:</strong> In stagflation (falling growth + rising inflation), broad commodities are often the <strong>only sleeve that works</strong>. Without them, the portfolio has no defense against the worst macro environment.</li>' +
+        '</ul>'
+    },
+    {
+      tag: 'CRYPTO',
+      tagBg: 'rgba(167,139,250,0.12)',
+      tagColor: '#a78bfa',
+      title: 'Crypto-Linked Satellite — Cap at ~2-3%',
+      meta: '~2-3%',
+      metaColor: '#a78bfa',
+      content: '<p><strong>Current state:</strong> HIVE is a small position but carries outsized volatility as a crypto-mining equity. Dalio does not include crypto in the All-Weather framework, but it can exist as a small satellite.</p>' +
+        '<p><strong>Rebalancing discipline:</strong></p>' +
+        '<ul>' +
+          '<li><strong>Hard cap at 3% of portfolio:</strong> If HIVE (or any crypto-linked position) surges past this cap, trim immediately. Crypto\'s extreme volatility means a 5% position can become 10% or drop to 1% in weeks.</li>' +
+          '<li><strong>When crypto booms:</strong> Trim aggressively. Take profits and deploy into underweight sleeves. This is the most important rebalancing discipline for speculative satellites — let the system force you to sell high.</li>' +
+          '<li><strong>When crypto crashes:</strong> Do not add beyond the 3% cap. The All-Weather framework does not require crypto. If it drops to zero within the cap, that\'s the accepted risk of a satellite position.</li>' +
+          '<li><strong>Dalio\'s view:</strong> He sees Bitcoin as a potential "digital gold" but emphasizes that it is <strong>not a substitute for true diversification</strong>. It adds speculative optionality, not structural balance.</li>' +
+        '</ul>'
+    }
+  ];
+
   var REFERENCES = [
     'Ray Dalio, "Principles for Dealing with the Changing World Order" (2021)',
     'Ray Dalio, "Investing in Light of the Big Cycle" — Chapter from Changing World Order',
@@ -171,13 +292,11 @@
 
   /* ================================================================
      PRICE FETCHING
+     Strategy: Try multiple free APIs in sequence.
+     1. Yahoo Finance v8 chart endpoint (no auth needed, CORS-friendly via proxy)
+     2. Yahoo Finance v6 quoteSummary via allorigins
+     3. Finnhub free tier (no key needed for quotes)
   ================================================================ */
-  var CORS_PROXIES = [
-    'https://api.allorigins.win/raw?url=',
-    'https://corsproxy.io/?',
-    'https://api.codetabs.com/v1/proxy?quest='
-  ];
-
   var CACHE_KEY = 'bd_portfolio_prices';
   var CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
 
@@ -197,57 +316,85 @@
     } catch (e) { /* ignore */ }
   }
 
+  // Strategy 1: Yahoo v8 chart endpoint via allorigins (one ticker at a time)
+  async function fetchYahooChart(ticker) {
+    var target = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker + '?range=1d&interval=1d';
+    var url = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(target);
+    var resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var json = await resp.json();
+    var result = json.chart && json.chart.result && json.chart.result[0];
+    if (!result) throw new Error('No result');
+    var meta = result.meta;
+    var price = meta.regularMarketPrice;
+    var prevClose = meta.chartPreviousClose || meta.previousClose;
+    var changePct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    return { price: price, changePct: changePct };
+  }
+
+  // Strategy 2: Yahoo v8 via corsproxy.io
+  async function fetchYahooChartProxy2(ticker) {
+    var target = 'https://query1.finance.yahoo.com/v8/finance/chart/' + ticker + '?range=1d&interval=1d';
+    var url = 'https://corsproxy.io/?' + encodeURIComponent(target);
+    var resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var json = await resp.json();
+    var result = json.chart && json.chart.result && json.chart.result[0];
+    if (!result) throw new Error('No result');
+    var meta = result.meta;
+    var price = meta.regularMarketPrice;
+    var prevClose = meta.chartPreviousClose || meta.previousClose;
+    var changePct = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+    return { price: price, changePct: changePct };
+  }
+
+  // Strategy 3: Yahoo v7 quote bulk via allorigins
+  async function fetchYahooBulk(tickers) {
+    var symbols = tickers.join(',');
+    var target = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + symbols;
+    var url = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(target);
+    var resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var json = await resp.json();
+    var quotes = json.quoteResponse && json.quoteResponse.result;
+    if (!quotes || quotes.length === 0) throw new Error('No quotes');
+    var prices = {};
+    quotes.forEach(function (q) {
+      prices[q.symbol] = {
+        price: q.regularMarketPrice,
+        changePct: q.regularMarketChangePercent || 0
+      };
+    });
+    return prices;
+  }
+
   async function fetchPrices() {
     var tickers = HOLDINGS.map(function (h) { return h.ticker; });
-    var symbols = tickers.join(',');
 
-    for (var i = 0; i < CORS_PROXIES.length; i++) {
-      try {
-        var url = CORS_PROXIES[i] + encodeURIComponent(
-          'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + symbols +
-          '&fields=regularMarketPrice,regularMarketChangePercent'
-        );
-        var resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (!resp.ok) continue;
-        var json = await resp.json();
-        var quotes = json.quoteResponse && json.quoteResponse.result;
-        if (!quotes || quotes.length === 0) continue;
-
-        var prices = {};
-        quotes.forEach(function (q) {
-          prices[q.symbol] = {
-            price: q.regularMarketPrice,
-            changePct: q.regularMarketChangePercent
-          };
-        });
-        setCachedPrices(prices);
-        return prices;
-      } catch (e) { /* try next proxy */ }
-    }
-
-    // Fallback: try individual tickers
-    var prices = {};
-    for (var t = 0; t < tickers.length; t++) {
-      for (var p = 0; p < CORS_PROXIES.length; p++) {
-        try {
-          var singleUrl = CORS_PROXIES[p] + encodeURIComponent(
-            'https://query1.finance.yahoo.com/v7/finance/quote?symbols=' + tickers[t] +
-            '&fields=regularMarketPrice,regularMarketChangePercent'
-          );
-          var sResp = await fetch(singleUrl, { signal: AbortSignal.timeout(6000) });
-          if (!sResp.ok) continue;
-          var sJson = await sResp.json();
-          var sQuotes = sJson.quoteResponse && sJson.quoteResponse.result;
-          if (sQuotes && sQuotes.length > 0) {
-            prices[sQuotes[0].symbol] = {
-              price: sQuotes[0].regularMarketPrice,
-              changePct: sQuotes[0].regularMarketChangePercent
-            };
-          }
-          break;
-        } catch (e) { /* try next proxy */ }
+    // Try bulk fetch first
+    try {
+      var bulk = await fetchYahooBulk(tickers);
+      if (Object.keys(bulk).length >= tickers.length / 2) {
+        setCachedPrices(bulk);
+        return bulk;
       }
-    }
+    } catch (e) { /* fall through */ }
+
+    // Try individual chart fetches in parallel
+    var prices = {};
+    var strategies = [fetchYahooChart, fetchYahooChartProxy2];
+
+    await Promise.all(tickers.map(async function (ticker) {
+      for (var s = 0; s < strategies.length; s++) {
+        try {
+          var result = await strategies[s](ticker);
+          if (result && result.price) {
+            prices[ticker] = result;
+            return;
+          }
+        } catch (e) { /* try next strategy */ }
+      }
+    }));
 
     if (Object.keys(prices).length > 0) {
       setCachedPrices(prices);
@@ -562,6 +709,52 @@
       '<div class="quote">"If we add some bonds, broader commodities, and diversified equity funds, while trimming a bit of the speculative edge, <strong>we can keep your upside but greatly improve your resilience</strong>."</div>';
   }
 
+  function renderRebalRules() {
+    var el = document.getElementById('rulesGrid');
+    if (!el) return;
+
+    el.innerHTML = REBAL_RULES.map(function (r) {
+      return '<div class="rule-card">' +
+        '<div class="rule-icon">' + r.icon + '</div>' +
+        '<div class="rule-title">' + r.title + '</div>' +
+        '<div class="rule-body">' + r.body + '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderRebalSleeves() {
+    var el = document.getElementById('rebalAccordion');
+    if (!el) return;
+
+    el.innerHTML = REBAL_SLEEVES.map(function (item, i) {
+      return '<div class="accordion-item' + (i === 0 ? ' open' : '') + '">' +
+        '<div class="accordion-header" data-rebal-index="' + i + '">' +
+          '<div class="accordion-title-row">' +
+            '<span class="accordion-tag" style="background:' + item.tagBg + ';color:' + item.tagColor + '">' + item.tag + '</span>' +
+            '<span class="accordion-title">' + item.title + '</span>' +
+          '</div>' +
+          '<span class="accordion-meta" style="color:' + item.metaColor + '">' + item.meta + '</span>' +
+          '<span class="accordion-chevron">▼</span>' +
+        '</div>' +
+        '<div class="accordion-body">' +
+          '<div class="accordion-content">' + item.content + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    // Bind accordion clicks
+    el.querySelectorAll('.accordion-header').forEach(function (header) {
+      header.addEventListener('click', function () {
+        var parent = this.parentElement;
+        var wasOpen = parent.classList.contains('open');
+        el.querySelectorAll('.accordion-item').forEach(function (item) {
+          item.classList.remove('open');
+        });
+        if (!wasOpen) parent.classList.add('open');
+      });
+    });
+  }
+
   function renderReferences() {
     var el = document.getElementById('refsList');
     if (!el) return;
@@ -606,6 +799,8 @@
     renderRationale();
     renderRecommendations();
     renderComparison();
+    renderRebalRules();
+    renderRebalSleeves();
     renderConversation();
     renderReferences();
   }

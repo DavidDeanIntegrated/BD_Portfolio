@@ -1021,6 +1021,82 @@
 .check-partial { color: var(--orange); font-weight: 700; }
 
 /* ================================================================
+   RULES GRID (Rebalancing)
+================================================================ */
+.rules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.rule-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.2s;
+}
+
+.rule-card:hover { border-color: var(--border-light); }
+
+.rule-icon {
+  font-size: 1.5rem;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.rule-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.rule-body {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.rule-body strong { color: var(--text-primary); }
+
+.rule-body ul {
+  padding-left: 18px;
+  margin: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-body ul li {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.rule-body ul li strong { color: var(--text-primary); }
+
+/* Rebalancing sleeve guide */
+.rebal-sleeve-guide {
+  margin-top: 8px;
+}
+
+.rebal-guide-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+/* ================================================================
    REFERENCES
 ================================================================ */
 .refs-list {

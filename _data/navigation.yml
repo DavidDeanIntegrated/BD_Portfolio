@@ -9,3 +9,5 @@ main:
     url: "#analysis"
   - title: Recommendations
     url: "#recommendations"
+  - title: Rebalancing
+    url: "#rebalancing"
