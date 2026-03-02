@@ -1,0 +1,10 @@
+title: "Brian's Portfolio Analysis"
+description: "Brian's portfolio evaluated through Ray Dalio's Big Cycle investing framework."
+baseurl: "/BD_Portfolio"
+url: ""
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: "default"

@@ -1,0 +1,11 @@
+main:
+  - title: Overview
+    url: "#overview"
+  - title: Holdings
+    url: "#holdings"
+  - title: Dalio Framework
+    url: "#dalio-framework"
+  - title: Analysis
+    url: "#analysis"
+  - title: Recommendations
+    url: "#recommendations"
