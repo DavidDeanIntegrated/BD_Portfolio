@@ -36,6 +36,20 @@ extra_js:
   </div>
 </header>
 
+<!-- API Key Banner (hidden by default; shown only if key is missing) -->
+<div id="apiKeyBanner" class="api-key-banner" style="display:none;">
+  <div class="api-key-banner-inner">
+    <div class="api-key-info">
+      <strong>Live prices require a free Finnhub API key.</strong>
+      <span>Get yours in 30 seconds at <a href="https://finnhub.io/register" target="_blank" rel="noopener">finnhub.io/register</a>, then paste it below.</span>
+    </div>
+    <form id="apiKeyForm" class="api-key-form">
+      <input type="text" id="apiKeyInput" placeholder="Paste your Finnhub API key here" autocomplete="off" spellcheck="false" />
+      <button type="submit">Save &amp; Fetch</button>
+    </form>
+  </div>
+</div>
+
 <main class="dashboard-main">
 
   <!-- Overview / Executive Summary -->

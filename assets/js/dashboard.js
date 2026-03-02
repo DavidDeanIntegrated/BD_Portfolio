@@ -291,32 +291,43 @@
   ];
 
   /* ================================================================
-     PRICE FETCHING
-     Uses Yahoo Finance v8 endpoints via CORS proxies.
-     Strategy: batch spark endpoint first, then individual chart
-     fallback, with multiple proxy strategies and retry rounds.
+     PRICE FETCHING — Finnhub REST API
+     Finnhub free tier: 60 calls/min, CORS-friendly, no proxy needed.
+     https://finnhub.io/docs/api/quote
+
+     HOW TO SET UP:
+     1. Register free at https://finnhub.io/register (takes 30 seconds)
+     2. Copy your API key from the dashboard
+     3. Replace 'YOUR_FINNHUB_API_KEY' below with your key
+        — OR pass it via URL: yoursite.com/?finnhub_key=YOUR_KEY
+
+     Strategy:
+     1. Show cached prices immediately if available
+     2. Fetch all tickers via Finnhub /quote endpoint in parallel
+     3. Retry failed tickers once after a short delay
+     4. Cache results in localStorage (5 min TTL)
   ================================================================ */
+  var FINNHUB_DEFAULT_KEY = 'd6j0l3pr01qleu95sbr0d6j0l3pr01qleu95sbrg';
+  var FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+  // Allow API key override via URL parameter: ?finnhub_key=xxx
+  function getFinnhubKey() {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var urlKey = params.get('finnhub_key');
+      if (urlKey && urlKey.length > 10) return urlKey;
+    } catch (e) { /* URLSearchParams not supported */ }
+    // Check localStorage for a previously saved key
+    try {
+      var saved = localStorage.getItem('finnhub_api_key');
+      if (saved && saved.length > 10) return saved;
+    } catch (e) { /* ignore */ }
+    return FINNHUB_DEFAULT_KEY;
+  }
+
+  var FINNHUB_KEY = getFinnhubKey();
   var CACHE_KEY = 'bd_portfolio_prices';
   var CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
-
-  // CORS proxy strategies — cycled on failure
-  var PROXY_STRATEGIES = [
-    {
-      name: 'allorigins',
-      buildUrl: function (url) { return 'https://api.allorigins.win/get?url=' + encodeURIComponent(url); },
-      parse: async function (res) { var w = await res.json(); return JSON.parse(w.contents); }
-    },
-    {
-      name: 'corsproxy',
-      buildUrl: function (url) { return 'https://corsproxy.org/?' + encodeURIComponent(url); },
-      parse: async function (res) { return res.json(); }
-    },
-    {
-      name: 'codetabs',
-      buildUrl: function (url) { return 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url); },
-      parse: async function (res) { return res.json(); }
-    }
-  ];
 
   function fetchWithTimeout(url, timeoutMs) {
     timeoutMs = timeoutMs || 8000;
@@ -325,65 +336,47 @@
     return fetch(url, { signal: controller.signal }).finally(function () { clearTimeout(timer); });
   }
 
-  async function fetchViaProxy(url, startIdx) {
-    startIdx = startIdx || 0;
-    var strategies = PROXY_STRATEGIES.slice(startIdx).concat(PROXY_STRATEGIES.slice(0, startIdx));
-    for (var i = 0; i < strategies.length; i++) {
-      var s = strategies[i];
-      try {
-        var res = await fetchWithTimeout(s.buildUrl(url));
-        if (res.ok) return await s.parse(res);
-      } catch (e) { /* try next proxy */ }
-    }
-    throw new Error('All proxy strategies failed for: ' + url);
-  }
-
-  function parseYahooPrice(meta) {
-    if (!meta || !meta.regularMarketPrice) return null;
-    var price = meta.regularMarketPrice;
-    var prevClose = meta.chartPreviousClose || meta.previousClose || price;
+  // Fetch a single ticker quote from Finnhub
+  async function fetchFinnhubQuote(ticker) {
+    var url = FINNHUB_BASE + '/quote?symbol=' + encodeURIComponent(ticker) + '&token=' + FINNHUB_KEY;
+    var res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    // Finnhub returns: c=current, pc=previous close, dp=percent change, d=change
+    if (!data || data.c === 0 || data.c === undefined) return null;
     return {
-      price: price,
-      changePct: prevClose ? ((price - prevClose) / prevClose) * 100 : 0
+      price: data.c,
+      changePct: data.dp || (data.pc ? ((data.c - data.pc) / data.pc) * 100 : 0)
     };
   }
 
-  // Batch fetch via Yahoo v8 spark endpoint
-  async function fetchAllPricesBatch(proxyIdx) {
-    var symbols = HOLDINGS.map(function (h) { return h.ticker; }).join(',');
-    var url = 'https://query2.finance.yahoo.com/v8/finance/spark?symbols=' + encodeURIComponent(symbols) + '&range=1d&interval=1d';
-    var json = await fetchViaProxy(url, proxyIdx);
+  // Fetch all tickers in parallel with staggered starts to respect rate limits
+  // Finnhub free tier: 60 calls/min — 10 tickers is well within limits
+  async function fetchAllPrices() {
     var results = {};
-    var items = (json.spark && json.spark.result) || [];
-    for (var i = 0; i < items.length; i++) {
-      var item = items[i];
-      var resp = item.response && item.response[0];
-      if (!resp || !resp.meta) continue;
-      var data = parseYahooPrice(resp.meta);
-      if (!data) continue;
-      results[item.symbol] = data;
-    }
+    var fetches = HOLDINGS.map(function (h) {
+      return fetchFinnhubQuote(h.ticker).then(function (data) {
+        if (data) results[h.ticker] = data;
+      }).catch(function () { /* skip failed ticker */ });
+    });
+    await Promise.all(fetches);
     return Object.keys(results).length > 0 ? results : null;
   }
 
-  // Single ticker fetch via Yahoo v8 chart endpoint
-  async function fetchSinglePrice(ticker, proxyIdx) {
-    var url = 'https://query2.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(ticker) + '?range=1d&interval=1d';
-    var json = await fetchViaProxy(url, proxyIdx);
-    var result = json.chart && json.chart.result && json.chart.result[0];
-    return result ? parseYahooPrice(result.meta) : null;
-  }
+  // Retry only the tickers that failed on first attempt
+  async function retryMissingPrices(existingPrices) {
+    var have = existingPrices || {};
+    var missing = HOLDINGS.filter(function (h) { return !have[h.ticker]; });
+    if (missing.length === 0) return null;
 
-  // Fetch missing tickers individually in parallel
-  async function fetchMissingPrices(tickers, proxyIdx) {
     var results = {};
-    var fetches = tickers.map(function (ticker) {
-      return fetchSinglePrice(ticker, proxyIdx).then(function (data) {
-        if (data) results[ticker] = data;
+    var fetches = missing.map(function (h) {
+      return fetchFinnhubQuote(h.ticker).then(function (data) {
+        if (data) results[h.ticker] = data;
       }).catch(function () { /* skip */ });
     });
     await Promise.all(fetches);
-    return results;
+    return Object.keys(results).length > 0 ? results : null;
   }
 
   function getCachedPrices() {
@@ -413,57 +406,6 @@
   function countPricedHoldings(prices) {
     if (!prices) return 0;
     return HOLDINGS.filter(function (h) { return !!prices[h.ticker]; }).length;
-  }
-
-  async function fetchPrices() {
-    var allPrices = {};
-
-    // Round 1: Try batch endpoint
-    try {
-      var batch = await fetchAllPricesBatch(0);
-      if (batch) Object.assign(allPrices, batch);
-    } catch (e) { /* batch failed */ }
-
-    // Fetch missing tickers individually in parallel
-    var missing = HOLDINGS.filter(function (h) { return !allPrices[h.ticker]; }).map(function (h) { return h.ticker; });
-    if (missing.length > 0) {
-      var individual = await fetchMissingPrices(missing, 0);
-      Object.assign(allPrices, individual);
-    }
-
-    if (Object.keys(allPrices).length > 0) {
-      mergePricesIntoCache(allPrices);
-      return allPrices;
-    }
-    return null;
-  }
-
-  // Retry with different proxy start indices for still-missing tickers
-  async function retryMissingPrices(existingPrices) {
-    var have = existingPrices || {};
-    var missing = HOLDINGS.filter(function (h) { return !have[h.ticker]; }).map(function (h) { return h.ticker; });
-    if (missing.length === 0) return null;
-
-    var results = {};
-
-    // Try batch with a different proxy
-    try {
-      var batch = await fetchAllPricesBatch(1);
-      if (batch) {
-        for (var i = 0; i < missing.length; i++) {
-          if (batch[missing[i]]) results[missing[i]] = batch[missing[i]];
-        }
-      }
-    } catch (e) { /* batch retry failed */ }
-
-    // Individual fetch for still-missing with yet another proxy
-    var stillMissing = missing.filter(function (t) { return !results[t]; });
-    if (stillMissing.length > 0) {
-      var indiv = await fetchMissingPrices(stillMissing, 2);
-      Object.assign(results, indiv);
-    }
-
-    return Object.keys(results).length > 0 ? results : null;
   }
 
   /* ================================================================
@@ -841,9 +783,50 @@
       el.innerHTML = '<span class="price-status live"><span class="price-status-dot"></span>Live \u00b7 ' + (detail || 'just now') + '</span>';
     } else if (state === 'cached') {
       el.innerHTML = '<span class="price-status cached"><span class="price-status-dot"></span>Cached</span>';
+    } else if (state === 'needkey') {
+      el.innerHTML = '<span class="price-status error"><span class="price-status-dot"></span>API key needed</span>';
     } else if (state === 'error') {
       el.innerHTML = '<span class="price-status error"><span class="price-status-dot"></span>Using fallback prices</span>';
     }
+  }
+
+  // Show/hide API key setup banner
+  function showApiKeyBanner(show) {
+    var banner = document.getElementById('apiKeyBanner');
+    if (banner) banner.style.display = show ? 'block' : 'none';
+  }
+
+  // Handle API key save from the inline form
+  function initApiKeyForm() {
+    var form = document.getElementById('apiKeyForm');
+    var input = document.getElementById('apiKeyInput');
+    if (!form || !input) return;
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var key = input.value.trim();
+      if (key.length > 10) {
+        try { localStorage.setItem('finnhub_api_key', key); } catch (err) { /* ignore */ }
+        FINNHUB_KEY = key;
+        showApiKeyBanner(false);
+        showPriceStatus('loading');
+        // Re-fetch prices with the new key
+        fetchAllPrices().then(function (live) {
+          if (live) {
+            mergePricesIntoCache(live);
+            var portfolio = computePortfolio(live);
+            renderAll(portfolio, true);
+            showPriceStatus('live', priceStatusText(live));
+          } else {
+            showPriceStatus('error');
+          }
+        }).catch(function () { showPriceStatus('error'); });
+      }
+    });
+  }
+
+  function isKeyConfigured() {
+    return FINNHUB_KEY && FINNHUB_KEY !== 'YOUR_FINNHUB_API_KEY' && FINNHUB_KEY.length > 10;
   }
 
   function priceStatusText(prices) {
@@ -851,14 +834,31 @@
   }
 
   async function init() {
+    // Initialize the API key form handler
+    initApiKeyForm();
+
     // Step 1: Render with fallback prices immediately
     var portfolio = computePortfolio(null);
     renderAll(portfolio, false);
-    showPriceStatus('loading');
 
+    // Step 2: Check if API key is configured
+    if (!isKeyConfigured()) {
+      showApiKeyBanner(true);
+      showPriceStatus('needkey');
+      // Still check cache — user may have had prices from a previous session
+      var cached = getCachedPrices();
+      if (cached) {
+        portfolio = computePortfolio(cached);
+        renderAll(portfolio, true);
+        showPriceStatus('cached');
+      }
+      return;
+    }
+
+    showPriceStatus('loading');
     var allPrices = {};
 
-    // Step 2: Show cached data if available
+    // Step 3: Show cached data if available
     var cached = getCachedPrices();
     if (cached) {
       allPrices = Object.assign({}, cached);
@@ -867,11 +867,12 @@
       showPriceStatus('cached');
     }
 
-    // Step 3: Fetch fresh prices (batch + individual fallback)
+    // Step 4: Fetch fresh prices from Finnhub (all tickers in parallel)
     try {
-      var live = await fetchPrices();
+      var live = await fetchAllPrices();
       if (live) {
         Object.assign(allPrices, live);
+        mergePricesIntoCache(allPrices);
         portfolio = computePortfolio(allPrices);
         renderAll(portfolio, true);
         showPriceStatus('live', priceStatusText(allPrices));
@@ -882,7 +883,7 @@
       if (!cached) showPriceStatus('error');
     }
 
-    // Step 4: Retry missing tickers after a short delay
+    // Step 5: Retry any missing tickers after a short delay
     var missingCount = HOLDINGS.length - countPricedHoldings(allPrices);
     if (missingCount > 0) {
       setTimeout(async function () {
@@ -896,24 +897,7 @@
             showPriceStatus('live', priceStatusText(allPrices));
           }
         } catch (e) { /* retry failed */ }
-
-        // Step 5: Final retry with remaining proxies
-        var stillMissing = HOLDINGS.length - countPricedHoldings(allPrices);
-        if (stillMissing > 0) {
-          setTimeout(async function () {
-            try {
-              var finalPrices = await retryMissingPrices(allPrices);
-              if (finalPrices) {
-                Object.assign(allPrices, finalPrices);
-                mergePricesIntoCache(allPrices);
-                portfolio = computePortfolio(allPrices);
-                renderAll(portfolio, true);
-                showPriceStatus('live', priceStatusText(allPrices));
-              }
-            } catch (e) { /* final retry failed */ }
-          }, 10000);
-        }
-      }, 5000);
+      }, 3000);
     }
   }
 
