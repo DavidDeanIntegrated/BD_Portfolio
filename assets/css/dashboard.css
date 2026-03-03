@@ -1306,6 +1306,17 @@
   padding: 0 16px;
 }
 
+.perf-missing-note {
+  margin-top: 10px;
+  padding: 8px 12px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  line-height: 1.4;
+}
+
 /* ================================================================
    DASHBOARD RESPONSIVE
 ================================================================ */

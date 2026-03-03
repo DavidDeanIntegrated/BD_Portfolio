@@ -342,10 +342,12 @@
     var res = await fetchWithTimeout(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     var data = await res.json();
-    // Finnhub returns: c=current, pc=previous close, dp=percent change, d=change
+    // Finnhub returns: c=current, pc=previous close, o=open, dp=percent change, d=change
     if (!data || data.c === 0 || data.c === undefined) return null;
     return {
       price: data.c,
+      prevClose: data.pc || data.c,
+      open: data.o || data.pc || data.c,
       changePct: data.dp || (data.pc ? ((data.c - data.pc) / data.pc) * 100 : 0)
     };
   }
@@ -780,96 +782,99 @@
   var perfSeriesCache = {};
 
   /* ================================================================
-     ALPHA VANTAGE — Historical candle data for the performance chart
-     Finnhub is kept for live quotes; Alpha Vantage provides the
-     TIME_SERIES_DAILY endpoint used for 1D / 7D / 1M chart views.
+     PERFORMANCE CHART
+     ─────────────────────────────────────────────────────────────────
+     1D  — Built entirely from Finnhub /quote data (prevClose → current).
+           No extra API calls; matches the "Today" return in the table.
+     7D / 1M — Uses Alpha Vantage TIME_SERIES_DAILY.
+           Shows a note if any tickers could not be fetched.
   ================================================================ */
+
+  // ── Alpha Vantage config ──
   var AV_KEY = 'FPC34YCBMQ39AULC';
   var AV_BASE = 'https://www.alphavantage.co/query';
   var AV_CACHE_KEY = 'bd_av_daily';
   var AV_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
-  // In-memory store for daily candles fetched this session
-  var avDailyCandles = null;
+  var avDailyCandles = null;          // in-memory cache
+  var avMissingTickers = [];          // tickers that failed AV fetch
 
   function avDelay(ms) {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
-  // Fetch TIME_SERIES_DAILY for a single ticker
+  // Fetch TIME_SERIES_DAILY for a single ticker from Alpha Vantage
   async function fetchAVDaily(ticker) {
     var url = AV_BASE + '?function=TIME_SERIES_DAILY&symbol=' + encodeURIComponent(ticker) +
       '&outputsize=compact&apikey=' + AV_KEY;
     var res = await fetchWithTimeout(url, 15000);
     if (!res.ok) throw new Error('AV HTTP ' + res.status);
     var data = await res.json();
-    // Alpha Vantage returns a 'Note' or 'Information' key on rate limit
     if (data['Note'] || data['Information']) throw new Error('AV rate limited');
     var ts = data['Time Series (Daily)'];
     if (!ts) return null;
     var timestamps = [];
     var closes = [];
-    // Keys come as "YYYY-MM-DD"; sort ascending
     var dates = Object.keys(ts).sort();
     dates.forEach(function (d) {
-      // Parse as market close 4 PM ET (UTC-5 / UTC-4 DST — close enough)
       timestamps.push(Math.floor(new Date(d + 'T16:00:00-05:00').getTime() / 1000));
       closes.push(parseFloat(ts[d]['4. close']));
     });
     return { t: timestamps, c: closes };
   }
 
-  // Load daily candles from localStorage cache
   function loadAVCache() {
     try {
       var raw = localStorage.getItem(AV_CACHE_KEY);
       if (!raw) return null;
       var parsed = JSON.parse(raw);
       if (Date.now() - parsed.ts > AV_CACHE_TTL) return null;
+      avMissingTickers = parsed.missing || [];
       return parsed.candles;
     } catch (e) { return null; }
   }
 
-  // Save daily candles to localStorage cache
-  function saveAVCache(candles) {
+  function saveAVCache(candles, missing) {
     try {
-      localStorage.setItem(AV_CACHE_KEY, JSON.stringify({ ts: Date.now(), candles: candles }));
-    } catch (e) { /* quota exceeded or private browsing */ }
+      localStorage.setItem(AV_CACHE_KEY, JSON.stringify({
+        ts: Date.now(), candles: candles, missing: missing
+      }));
+    } catch (e) { /* quota exceeded */ }
   }
 
-  // Fetch daily candles for all holdings (sequential with small delays)
+  // Fetch daily candles for all holdings (sequential, 400ms gaps)
   async function fetchAllDailyCandles() {
-    // Return in-memory cache if available
     if (avDailyCandles) return avDailyCandles;
 
-    // Check localStorage cache
     var cached = loadAVCache();
     if (cached) {
       avDailyCandles = cached;
       return cached;
     }
 
-    // Fetch from Alpha Vantage — sequential with 400ms gaps to respect rate limits
     var candles = {};
+    var missing = [];
     for (var i = 0; i < HOLDINGS.length; i++) {
       var ticker = HOLDINGS[i].ticker;
       try {
         var d = await fetchAVDaily(ticker);
-        if (d) candles[ticker] = d;
+        if (d) { candles[ticker] = d; }
+        else   { missing.push(ticker); }
       } catch (err) {
         console.warn('AV daily fetch failed for ' + ticker + ':', err.message || err);
+        missing.push(ticker);
       }
-      // Small delay between requests
       if (i < HOLDINGS.length - 1) await avDelay(400);
     }
 
+    avMissingTickers = missing;
     if (Object.keys(candles).length > 0) {
       avDailyCandles = candles;
-      saveAVCache(candles);
+      saveAVCache(candles, missing);
     }
     return candles;
   }
 
+  // ── Helpers ──
   function perfFmtValue(val) {
     return '$' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
@@ -880,7 +885,6 @@
     return 'Past month';
   }
 
-  // Binary search: find nearest price at a target timestamp
   function findNearestPrice(timestamps, values, target) {
     if (!timestamps || !timestamps.length) return null;
     var lo = 0, hi = timestamps.length - 1;
@@ -895,11 +899,81 @@
     return values[lo];
   }
 
-  // Build a portfolio value time series for a given range using Alpha Vantage daily data
-  async function buildPortfolioSeries(range) {
+  // ── 1D series from Finnhub quote data (no extra API calls) ──
+  function build1DSeries() {
+    var prices = getCachedPrices();
+    if (!prices) return null;
+
+    var prevCloseTotal = 0;
+    var openTotal = 0;
+    var currentTotal = 0;
+    var count = 0;
+
+    HOLDINGS.forEach(function (h) {
+      var q = prices[h.ticker];
+      if (q && q.price) {
+        prevCloseTotal += h.shares * (q.prevClose || q.price);
+        openTotal      += h.shares * (q.open || q.prevClose || q.price);
+        currentTotal   += h.shares * q.price;
+        count++;
+      } else {
+        prevCloseTotal += h.shares * h.fallback;
+        openTotal      += h.shares * h.fallback;
+        currentTotal   += h.shares * h.fallback;
+      }
+    });
+
+    if (count === 0) return null;
+
+    // Build a smooth line: prevClose → open → current
+    var now = Date.now();
+    var today = new Date();
+
+    // Previous close at ~4 PM yesterday
+    var yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    // Skip weekends for previous close timestamp
+    var dow = yesterday.getDay();
+    if (dow === 0) yesterday.setDate(yesterday.getDate() - 2); // Sun → Fri
+    if (dow === 6) yesterday.setDate(yesterday.getDate() - 1); // Sat → Fri
+    yesterday.setHours(16, 0, 0, 0);
+    var prevCloseTime = yesterday.getTime();
+
+    // Market open at 9:30 AM today
+    var marketOpen = new Date(today);
+    marketOpen.setHours(9, 30, 0, 0);
+    var openTime = marketOpen.getTime();
+
+    // If before market open, shift to show yesterday's session
+    if (now < openTime) {
+      openTime -= 24 * 60 * 60 * 1000;
+      prevCloseTime -= 24 * 60 * 60 * 1000;
+    }
+
+    var series = [];
+
+    // Point 1: Previous close
+    series.push({ time: prevCloseTime, value: prevCloseTotal });
+
+    // Point 2: Market open
+    series.push({ time: openTime, value: openTotal });
+
+    // Points 3-N: Interpolated from open to current
+    var steps = 18;
+    for (var i = 1; i <= steps; i++) {
+      var frac = i / steps;
+      var t = openTime + (now - openTime) * frac;
+      var v = openTotal + (currentTotal - openTotal) * frac;
+      series.push({ time: t, value: v });
+    }
+
+    return series;
+  }
+
+  // ── 7D / 1M series from Alpha Vantage daily data ──
+  async function buildAVSeries(range) {
     var candles = await fetchAllDailyCandles();
 
-    // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
     var maxLen = 0;
     HOLDINGS.forEach(function (h) {
@@ -912,25 +986,15 @@
 
     if (!baseTimestamps || baseTimestamps.length < 2) return null;
 
-    // Trim timestamps based on range
-    var trimCount;
-    if (range === '1D') {
-      trimCount = 3;   // last 3 trading days
-    } else if (range === '7D') {
-      trimCount = 7;   // last 7 trading days
-    } else {
-      trimCount = 22;  // ~1 month of trading days
-    }
+    var trimCount = (range === '7D') ? 7 : 22;
     if (baseTimestamps.length > trimCount) {
       baseTimestamps = baseTimestamps.slice(-trimCount);
     }
 
-    // Build portfolio value at each timestamp
     var series = [];
     for (var i = 0; i < baseTimestamps.length; i++) {
       var t = baseTimestamps[i];
       var value = 0;
-
       HOLDINGS.forEach(function (h) {
         var cd = candles[h.ticker];
         if (cd) {
@@ -939,54 +1003,26 @@
         }
         value += h.shares * h.fallback;
       });
-
       series.push({ time: t * 1000, value: value });
     }
 
     return series;
   }
 
-  // Build a minimal 1D series from live quote data (fallback when AV fails)
-  function buildFallbackSeries() {
-    var cached = getCachedPrices();
-    if (!cached) return null;
-
-    var startValue = 0;
-    var endValue = 0;
-    var hasPrices = false;
-
-    HOLDINGS.forEach(function (h) {
-      var data = cached[h.ticker];
-      if (data && data.price) {
-        var dayChange = (data.changePct || 0) / 100 * data.price;
-        startValue += h.shares * (data.price - dayChange);
-        endValue += h.shares * data.price;
-        hasPrices = true;
-      } else {
-        startValue += h.shares * h.fallback;
-        endValue += h.shares * h.fallback;
-      }
-    });
-
-    if (!hasPrices) return null;
-
-    var now = Date.now();
-    var today = new Date();
-    today.setHours(9, 30, 0, 0);
-    var marketOpen = today.getTime();
-    if (now < marketOpen) marketOpen -= 24 * 60 * 60 * 1000;
-
-    var points = [];
-    var steps = 20;
-    for (var i = 0; i <= steps; i++) {
-      var t = marketOpen + (now - marketOpen) * (i / steps);
-      var v = startValue + (endValue - startValue) * (i / steps);
-      points.push({ time: t, value: v });
+  // ── Missing-ticker note ──
+  function showMissingNote(tickers) {
+    var noteEl = document.getElementById('perfMissingNote');
+    if (!noteEl) return;
+    if (!tickers || tickers.length === 0) {
+      noteEl.style.display = 'none';
+      return;
     }
-    return points;
+    noteEl.textContent = 'Could not load data for: ' + tickers.join(', ') +
+      ' \u2014 using fallback prices for ' + (tickers.length === 1 ? 'this stock' : 'these stocks') + '.';
+    noteEl.style.display = 'block';
   }
 
-  // Crosshair plugin for hover line
+  // ── Crosshair plugin ──
   var perfCrosshairPlugin = {
     id: 'perfCrosshair',
     afterDraw: function (chart) {
@@ -1004,7 +1040,7 @@
     }
   };
 
-  // Update the header value and return display
+  // ── Header value + return display ──
   function updatePerfHeader(currentVal, startVal, range) {
     var valueEl = document.getElementById('perfValue');
     var returnEl = document.getElementById('perfReturn');
@@ -1022,7 +1058,7 @@
       ' (' + sign + Math.abs(pct).toFixed(2) + '%)  ' + perfRangeLabel(range);
   }
 
-  // Render the Chart.js line chart
+  // ── Render the Chart.js line chart ──
   function renderPerfChart(series, range) {
     var canvas = document.getElementById('perfChart');
     if (!canvas || !series || series.length < 2) return;
@@ -1106,6 +1142,9 @@
               callback: function (value, index) {
                 var ts = labels[index];
                 var d = new Date(ts);
+                if (range === '1D') {
+                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                }
                 return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
               }
             }
@@ -1135,11 +1174,13 @@
     });
   }
 
-  // Load a specific range (with series cache)
+  // ── Load a specific range ──
   async function loadPerfChart(range) {
     var returnEl = document.getElementById('perfReturn');
 
+    // Check in-memory series cache
     if (perfSeriesCache[range]) {
+      showMissingNote(range === '1D' ? [] : avMissingTickers);
       renderPerfChart(perfSeriesCache[range], range);
       return;
     }
@@ -1149,41 +1190,51 @@
       returnEl.textContent = 'Loading ' + perfRangeLabel(range).toLowerCase() + '\u2026';
     }
 
-    try {
-      var series = await buildPortfolioSeries(range);
+    var series = null;
+
+    if (range === '1D') {
+      // 1D: use Finnhub quote data already fetched — zero extra API calls
+      series = build1DSeries();
+      showMissingNote([]);
       if (series && series.length >= 2) {
         perfSeriesCache[range] = series;
         renderPerfChart(series, range);
         return;
       }
-    } catch (err) {
-      console.warn('Chart load error for ' + range + ':', err);
-    }
-
-    // Fallback for 1D: use live price data to build a simple chart
-    if (range === '1D') {
-      var fallback = buildFallbackSeries();
-      if (fallback) {
-        renderPerfChart(fallback, range);
-        return;
-      }
+      // Prices not loaded yet; will be retried via retryPerfChartIfEmpty
       if (returnEl) returnEl.textContent = 'Waiting for price data\u2026';
     } else {
+      // 7D / 1M: use Alpha Vantage daily data
+      try {
+        series = await buildAVSeries(range);
+        showMissingNote(avMissingTickers);
+        if (series && series.length >= 2) {
+          perfSeriesCache[range] = series;
+          renderPerfChart(series, range);
+          return;
+        }
+      } catch (err) {
+        console.warn('Chart load error for ' + range + ':', err);
+      }
       if (returnEl) returnEl.textContent = 'Historical data unavailable';
+      showMissingNote(avMissingTickers);
     }
   }
 
-  // Called after live prices arrive to render fallback chart if needed
+  // Called after live prices arrive — rebuild 1D chart if it hasn't rendered yet
   function retryPerfChartIfEmpty() {
-    if (perfChartInstance) return;
+    // Clear stale 1D cache so it picks up new prices
+    delete perfSeriesCache['1D'];
     if (perfCurrentRange !== '1D') return;
-    var fallback = buildFallbackSeries();
-    if (fallback) {
-      renderPerfChart(fallback, '1D');
+    var series = build1DSeries();
+    if (series && series.length >= 2) {
+      perfSeriesCache['1D'] = series;
+      showMissingNote([]);
+      renderPerfChart(series, '1D');
     }
   }
 
-  // Initialize the performance chart and period tab handlers
+  // ── Initialize chart + tab handlers ──
   async function initPerfChart() {
     var container = document.getElementById('perfChartSection');
     if (!container) return;
