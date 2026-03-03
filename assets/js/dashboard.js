@@ -415,11 +415,21 @@
   ================================================================ */
   function computePortfolio(livePrices) {
     var total = 0;
+    var totalTodayReturn = 0;
     HOLDINGS.forEach(function (h) {
       var p = (livePrices && livePrices[h.ticker]) ? livePrices[h.ticker].price : h.fallback;
       h.currentPrice = p;
       h.changePct = (livePrices && livePrices[h.ticker]) ? livePrices[h.ticker].changePct : null;
       h.value = h.shares * p;
+      // Today's dollar return = shares × (current − prevClose)
+      if (livePrices && livePrices[h.ticker] && livePrices[h.ticker].prevClose) {
+        h.todayReturn = h.shares * (p - livePrices[h.ticker].prevClose);
+      } else if (h.changePct !== null && h.changePct !== undefined) {
+        h.todayReturn = h.value * (h.changePct / 100);
+      } else {
+        h.todayReturn = null;
+      }
+      if (h.todayReturn !== null) totalTodayReturn += h.todayReturn;
       total += h.value;
     });
 
@@ -437,7 +447,7 @@
       buckets[h.bucket] += h.weight;
     });
 
-    return { total: total, buckets: buckets };
+    return { total: total, buckets: buckets, totalTodayReturn: totalTodayReturn };
   }
 
   /* ================================================================
@@ -577,6 +587,12 @@
     }).join('');
   }
 
+  function fmtReturn(n) {
+    if (n === null || n === undefined) return '—';
+    var sign = n >= 0 ? '+' : '-';
+    return sign + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
   function renderTable(portfolio, isLive) {
     var tbody = document.getElementById('holdingsTbody');
     if (!tbody) return;
@@ -590,6 +606,12 @@
         changeClass = h.changePct >= 0 ? 'positive' : 'negative';
         changeText = (h.changePct >= 0 ? '+' : '') + h.changePct.toFixed(2) + '%';
       }
+      var returnClass = '';
+      var returnText = '—';
+      if (h.todayReturn !== null && h.todayReturn !== undefined) {
+        returnClass = h.todayReturn >= 0 ? 'positive' : 'negative';
+        returnText = fmtReturn(h.todayReturn);
+      }
 
       return '<tr>' +
         '<td class="ticker-cell">' + h.ticker + '</td>' +
@@ -598,12 +620,21 @@
         '<td class="pct-cell">' + fmtPct(h.weight) + '</td>' +
         '<td class="price-cell">' + fmtDec(h.currentPrice) + '</td>' +
         '<td class="change-cell ' + changeClass + '">' + changeText + '</td>' +
+        '<td class="return-cell ' + returnClass + '">' + returnText + '</td>' +
       '</tr>';
     }).join('');
 
     // Total row
     var totalEl = document.getElementById('tableTotalValue');
     if (totalEl) totalEl.innerHTML = '<strong>' + fmt(portfolio.total) + '</strong>';
+
+    // Today's total return
+    var totalReturnEl = document.getElementById('tableTotalReturn');
+    if (totalReturnEl) {
+      var tr = portfolio.totalTodayReturn || 0;
+      var cls = tr >= 0 ? 'positive' : 'negative';
+      totalReturnEl.innerHTML = '<strong class="' + cls + '">' + fmtReturn(tr) + '</strong>';
+    }
 
     var statusEl = document.getElementById('tablePriceStatus');
     if (statusEl) {

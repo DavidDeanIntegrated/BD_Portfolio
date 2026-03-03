@@ -744,6 +744,23 @@
 .change-cell.positive { color: var(--green); }
 .change-cell.negative { color: var(--red); }
 
+.return-cell {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.return-cell.positive { color: var(--green); }
+.return-cell.negative { color: var(--red); }
+
+#tableTotalReturn {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+#tableTotalReturn .positive { color: var(--green); }
+#tableTotalReturn .negative { color: var(--red); }
+
 .price-status {
   display: inline-flex;
   align-items: center;
@@ -1338,11 +1355,13 @@
   .chart-legend { grid-template-columns: 1fr; }
   .stat-pill { padding: 8px 12px; }
   .stat-value { font-size: 0.9rem; }
-  .price-cell, .change-cell,
+  .price-cell, .change-cell, .return-cell,
   .holdings-table th:nth-child(5),
   .holdings-table th:nth-child(6),
+  .holdings-table th:nth-child(7),
   .holdings-table td:nth-child(5),
-  .holdings-table td:nth-child(6) { display: none; }
+  .holdings-table td:nth-child(6),
+  .holdings-table td:nth-child(7) { display: none; }
   .rec-grid { grid-template-columns: 1fr; }
   .perf-container { padding: 20px 16px 16px; }
   .perf-value { font-size: 1.6rem; }
