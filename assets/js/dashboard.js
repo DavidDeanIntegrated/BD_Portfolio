@@ -825,7 +825,7 @@
   var AV_KEY = 'FPC34YCBMQ39AULC';
   var AV_BASE = 'https://www.alphavantage.co/query';
   var AV_CACHE_KEY = 'bd_av_daily';
-  var AV_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+  var AV_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours (daily data barely changes intraday)
   var avDailyCandles = null;          // in-memory cache
   var avMissingTickers = [];          // tickers that failed AV fetch
 
@@ -872,7 +872,7 @@
     } catch (e) { /* quota exceeded */ }
   }
 
-  // Fetch daily candles for all holdings (sequential, 400ms gaps)
+  // Fetch daily candles for all holdings (sequential, 13s gaps to respect AV 5/min limit)
   async function fetchAllDailyCandles() {
     if (avDailyCandles) return avDailyCandles;
 
@@ -894,7 +894,8 @@
         console.warn('AV daily fetch failed for ' + ticker + ':', err.message || err);
         missing.push(ticker);
       }
-      if (i < HOLDINGS.length - 1) await avDelay(400);
+      // Alpha Vantage free tier: 5 requests/minute — wait 13s between requests
+      if (i < HOLDINGS.length - 1) await avDelay(13000);
     }
 
     avMissingTickers = missing;
@@ -931,12 +932,19 @@
   }
 
   // ── Finnhub /stock/candle — 5-min intraday for 1D chart ──
+  var candlesBlocked = false; // Set true if candle endpoint returns 403 (free tier restriction)
+
   async function fetchTickerCandles(ticker, resolution, from, to) {
     var url = FINNHUB_BASE + '/stock/candle?symbol=' + encodeURIComponent(ticker) +
       '&resolution=' + resolution + '&from=' + from + '&to=' + to + '&token=' + FINNHUB_KEY;
-    var res = await fetchWithTimeout(url, 12000);
+    var res = await fetchWithTimeout(url, 8000);
     if (!res.ok) {
-      console.warn('[Candle] ' + ticker + ': HTTP ' + res.status);
+      if (res.status === 403) {
+        console.warn('[Candle] ' + ticker + ': HTTP 403 — endpoint blocked (free tier does not include intraday candles)');
+        candlesBlocked = true;
+      } else {
+        console.warn('[Candle] ' + ticker + ': HTTP ' + res.status);
+      }
       throw new Error('Finnhub candle ' + res.status);
     }
     var data = await res.json();
@@ -951,19 +959,41 @@
   // Track which tickers lack Finnhub candle data (for the note)
   var candleMissingTickers = [];
 
-  // Build 1D series from Finnhub 5-min candle data (same approach as InvestmentThesis)
+  // Build 1D series from Finnhub 5-min candle data
   async function buildFinnhub1DSeries() {
+    // If a previous attempt got 403, skip entirely
+    if (candlesBlocked) {
+      console.log('[Candle] Skipping — endpoint blocked on free tier');
+      return null;
+    }
+
     var now = Math.floor(Date.now() / 1000);
-    var from = now - 3 * 24 * 60 * 60; // 3-day lookback to cover weekends
+    var from = now - 3 * 24 * 60 * 60;
     candleMissingTickers = [];
 
-    // Fetch 5-min candles sequentially with delays to avoid burst rate-limit 403s
+    // Try the first ticker to test if candle endpoint is accessible
     var candles = {};
-    for (var idx = 0; idx < HOLDINGS.length; idx++) {
-      var h = HOLDINGS[idx];
-      if (idx > 0) {
-        await new Promise(function (r) { setTimeout(r, 350); }); // 350ms between requests
+    var firstTicker = HOLDINGS[0].ticker;
+    try {
+      var firstResult = await fetchTickerCandles(firstTicker, '5', from, now);
+      if (firstResult) {
+        candles[firstTicker] = firstResult;
+      } else {
+        candleMissingTickers.push(firstTicker);
       }
+    } catch (err) {
+      candleMissingTickers.push(firstTicker);
+      // If blocked (403), don't bother with remaining tickers
+      if (candlesBlocked) {
+        console.log('[Candle] First request returned 403 — skipping remaining tickers');
+        return null;
+      }
+    }
+
+    // First ticker succeeded — fetch remaining tickers with small delays
+    for (var idx = 1; idx < HOLDINGS.length; idx++) {
+      var h = HOLDINGS[idx];
+      await new Promise(function (r) { setTimeout(r, 200); });
       try {
         var d = await fetchTickerCandles(h.ticker, '5', from, now);
         if (d) {
@@ -972,14 +1002,13 @@
           candleMissingTickers.push(h.ticker);
         }
       } catch (err) {
-        console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
         candleMissingTickers.push(h.ticker);
+        if (candlesBlocked) break; // Stop if we hit 403 mid-way
       }
     }
 
     var gotCount = Object.keys(candles).length;
-    console.log('[Candle] Got data for ' + gotCount + '/' + HOLDINGS.length + ' tickers. Missing: ' +
-      (candleMissingTickers.length > 0 ? candleMissingTickers.join(', ') : 'none'));
+    console.log('[Candle] Got data for ' + gotCount + '/' + HOLDINGS.length + ' tickers');
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -992,9 +1021,8 @@
       }
     });
 
-    // Need at least ONE ticker with candle data to build the chart
     if (!baseTimestamps || baseTimestamps.length < 2) {
-      console.warn('[Candle] No base timestamps found — all tickers returned no data');
+      console.warn('[Candle] No base timestamps — candle data unavailable');
       return null;
     }
 
@@ -1010,7 +1038,6 @@
     }
 
     // Build portfolio value at each timestamp
-    // Tickers without candle data use their current price (from quotes) or fallback
     var cachedPrices = getCachedPrices();
     var series = [];
     for (var i = 0; i < baseTimestamps.length; i++) {
@@ -1022,7 +1049,6 @@
           var p = findNearestPrice(cd.t, cd.c, t);
           if (p != null) { value += h.shares * p; return; }
         }
-        // Use live price if available, otherwise fallback
         var livePrice = cachedPrices && cachedPrices[h.ticker] && cachedPrices[h.ticker].price;
         value += h.shares * (livePrice || h.fallback);
       });
@@ -1307,10 +1333,11 @@
         console.warn('Finnhub 1D candle error:', err);
       }
       // Fallback: use Finnhub quote data (prevClose → current)
-      console.log('[Chart] Finnhub candles returned no usable data — falling back to quote-based 1D');
+      console.log('[Chart] Finnhub candles unavailable — using quote-based 1D');
       var fallback = buildQuoteFallback1D();
       if (fallback) {
-        showMissingNote(candleMissingTickers.length > 0 ? candleMissingTickers : []);
+        perfSeriesCache[range] = fallback; // Cache fallback so tab clicks don't re-trigger
+        showMissingNote([]);
         renderPerfChart(fallback, range);
         return;
       }
