@@ -777,14 +777,16 @@
   var perfChartInstance = null;
   var perfCurrentRange = '1D';
   var PORTFOLIO_TOTAL = 0;
+  var perfSeriesCache = {};
 
-  function perfFmtValue(n) {
-    return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  function perfFmtValue(val) {
+    return '$' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  // Small delay helper for staggering API calls
-  function delay(ms) {
-    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  function perfRangeLabel(range) {
+    if (range === '1D') return 'Today';
+    if (range === '7D') return 'Past week';
+    return 'Past month';
   }
 
   // Fetch OHLC candles from Finnhub for a single ticker
@@ -813,41 +815,35 @@
     return values[lo];
   }
 
-  // Fetch candles for all holdings in small batches
-  async function fetchAllCandles(resolution, from, to) {
-    var candles = {};
-    var batchSize = 3;
-    for (var b = 0; b < HOLDINGS.length; b += batchSize) {
-      var batch = HOLDINGS.slice(b, b + batchSize);
-      var fetches = batch.map(function (h) {
-        return fetchTickerCandles(h.ticker, resolution, from, to).then(function (d) {
-          if (d) candles[h.ticker] = d;
-        }).catch(function () {});
-      });
-      await Promise.all(fetches);
-      if (b + batchSize < HOLDINGS.length) await delay(300);
-    }
-    return candles;
-  }
-
   // Build a portfolio value time series for a given range
   async function buildPortfolioSeries(range) {
     var now = Math.floor(Date.now() / 1000);
-
-    // Use daily candles — reliably supported on Finnhub free tier.
-    // Intraday resolutions (5/30/60) require premium.
-    var resolution = 'D';
-    var from;
+    var resolution, from;
 
     if (range === '1D') {
-      from = now - 5 * 24 * 60 * 60;    // 5-day lookback (show last few trading days)
+      resolution = '5';
+      from = now - 3 * 24 * 60 * 60;
     } else if (range === '7D') {
-      from = now - 12 * 24 * 60 * 60;   // 12-day lookback
+      resolution = '30';
+      from = now - 8 * 24 * 60 * 60;
     } else {
-      from = now - 40 * 24 * 60 * 60;   // 40-day lookback
+      resolution = '60';
+      from = now - 32 * 24 * 60 * 60;
     }
 
-    var candles = await fetchAllCandles(resolution, from, now);
+    // Fetch all candles in parallel
+    var candles = {};
+    var fetches = [];
+    HOLDINGS.forEach(function (h) {
+      fetches.push(
+        fetchTickerCandles(h.ticker, resolution, from, now).then(function (d) {
+          if (d) candles[h.ticker] = d;
+        }).catch(function (err) {
+          console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
+        })
+      );
+    });
+    await Promise.all(fetches);
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -862,14 +858,17 @@
 
     if (!baseTimestamps || baseTimestamps.length < 2) return null;
 
-    // For 1D, show only the last 2 trading days of daily candles
-    if (range === '1D' && baseTimestamps.length > 3) {
-      baseTimestamps = baseTimestamps.slice(-3);
-    }
-
-    // For 7D, trim to last ~7 trading days
-    if (range === '7D' && baseTimestamps.length > 8) {
-      baseTimestamps = baseTimestamps.slice(-8);
+    // For 1D: trim to only the last trading session
+    if (range === '1D' && baseTimestamps.length > 2) {
+      var lastSessionStart = 0;
+      for (var g = 1; g < baseTimestamps.length; g++) {
+        if (baseTimestamps[g] - baseTimestamps[g - 1] > 3600) {
+          lastSessionStart = g;
+        }
+      }
+      if (lastSessionStart > 0) {
+        baseTimestamps = baseTimestamps.slice(lastSessionStart);
+      }
     }
 
     // Build portfolio value at each timestamp
@@ -884,7 +883,6 @@
           var p = findNearestPrice(cd.t, cd.c, t);
           if (p != null) { value += h.shares * p; return; }
         }
-        // Fallback: use fallback price if no candle data
         value += h.shares * h.fallback;
       });
 
@@ -892,6 +890,46 @@
     }
 
     return series;
+  }
+
+  // Build a minimal 1D series from live quote data (fallback when candles fail)
+  function buildFallbackSeries() {
+    var cached = getCachedPrices();
+    if (!cached) return null;
+
+    var startValue = 0;
+    var endValue = 0;
+    var hasPrices = false;
+
+    HOLDINGS.forEach(function (h) {
+      var data = cached[h.ticker];
+      if (data && data.price) {
+        var dayChange = (data.changePct || 0) / 100 * data.price;
+        startValue += h.shares * (data.price - dayChange);
+        endValue += h.shares * data.price;
+        hasPrices = true;
+      } else {
+        startValue += h.shares * h.fallback;
+        endValue += h.shares * h.fallback;
+      }
+    });
+
+    if (!hasPrices) return null;
+
+    var now = Date.now();
+    var today = new Date();
+    today.setHours(9, 30, 0, 0);
+    var marketOpen = today.getTime();
+    if (now < marketOpen) marketOpen -= 24 * 60 * 60 * 1000;
+
+    var points = [];
+    var steps = 20;
+    for (var i = 0; i <= steps; i++) {
+      var t = marketOpen + (now - marketOpen) * (i / steps);
+      var v = startValue + (endValue - startValue) * (i / steps);
+      points.push({ time: t, value: v });
+    }
+    return points;
   }
 
   // Crosshair plugin for hover line
@@ -906,7 +944,7 @@
       ctx.moveTo(chart._crosshairX, yAxis.top);
       ctx.lineTo(chart._crosshairX, yAxis.bottom);
       ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(128,128,128,0.4)';
+      ctx.strokeStyle = 'rgba(128,128,128,0.35)';
       ctx.stroke();
       ctx.restore();
     }
@@ -916,16 +954,18 @@
   function updatePerfHeader(currentVal, startVal, range) {
     var valueEl = document.getElementById('perfValue');
     var returnEl = document.getElementById('perfReturn');
-    if (valueEl) valueEl.textContent = perfFmtValue(Math.round(currentVal));
+    if (!valueEl || !returnEl) return;
 
-    if (returnEl) {
-      var diff = currentVal - startVal;
-      var pct = startVal !== 0 ? (diff / startVal) * 100 : 0;
-      var sign = diff >= 0 ? '+' : '';
-      var rangeLabel = range === '1D' ? 'Today' : (range === '7D' ? 'Past 7 days' : 'Past month');
-      returnEl.textContent = sign + perfFmtValue(Math.round(diff)) + ' (' + sign + pct.toFixed(2) + '%) ' + rangeLabel;
-      returnEl.className = 'perf-return ' + (diff >= 0 ? 'perf-positive' : 'perf-negative');
-    }
+    valueEl.textContent = perfFmtValue(currentVal);
+
+    var delta = currentVal - startVal;
+    var pct = startVal ? (delta / startVal * 100) : 0;
+    var sign = delta >= 0 ? '+' : '-';
+    var colorClass = delta >= 0 ? 'perf-positive' : 'perf-negative';
+
+    returnEl.className = 'perf-return ' + colorClass;
+    returnEl.textContent = sign + '$' + Math.abs(delta).toFixed(2) +
+      ' (' + sign + Math.abs(pct).toFixed(2) + '%)  ' + perfRangeLabel(range);
   }
 
   // Render the Chart.js line chart
@@ -951,6 +991,9 @@
       perfChartInstance.destroy();
       perfChartInstance = null;
     }
+
+    canvas._perfSeries = series;
+    canvas._perfRange = range;
 
     perfChartInstance = new Chart(ctx, {
       type: 'line',
@@ -1009,6 +1052,9 @@
               callback: function (value, index) {
                 var ts = labels[index];
                 var d = new Date(ts);
+                if (range === '1D') {
+                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                }
                 return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
               }
             }
@@ -1021,36 +1067,68 @@
     updatePerfHeader(endVal, startVal, range);
   }
 
-  // Load chart data and render
-  async function loadPerfChart(range) {
-    var wrap = document.querySelector('.perf-chart-wrap');
-    if (!wrap) return;
-
-    // Show loading state
+  // Mouseleave restores the header to current values
+  function setupPerfChartEvents() {
     var canvas = document.getElementById('perfChart');
-    if (canvas) canvas.style.display = 'none';
-    var loader = wrap.querySelector('.perf-loading');
-    if (!loader) {
-      loader = document.createElement('div');
-      loader.className = 'perf-loading';
-      wrap.appendChild(loader);
+    if (!canvas) return;
+    canvas.addEventListener('mouseleave', function () {
+      if (perfChartInstance) {
+        perfChartInstance._crosshairX = null;
+        perfChartInstance.draw();
+      }
+      var series = canvas._perfSeries;
+      var range = canvas._perfRange;
+      if (series && series.length >= 2) {
+        updatePerfHeader(series[series.length - 1].value, series[0].value, range);
+      }
+    });
+  }
+
+  // Load a specific range (with cache)
+  async function loadPerfChart(range) {
+    var returnEl = document.getElementById('perfReturn');
+
+    if (perfSeriesCache[range]) {
+      renderPerfChart(perfSeriesCache[range], range);
+      return;
     }
-    loader.textContent = 'Loading chart\u2026';
-    loader.style.display = 'flex';
+
+    if (returnEl) {
+      returnEl.className = 'perf-return';
+      returnEl.textContent = 'Loading ' + perfRangeLabel(range).toLowerCase() + '\u2026';
+    }
 
     try {
       var series = await buildPortfolioSeries(range);
       if (series && series.length >= 2) {
-        loader.style.display = 'none';
-        if (canvas) canvas.style.display = 'block';
+        perfSeriesCache[range] = series;
         renderPerfChart(series, range);
-      } else {
-        loader.textContent = 'No chart data available';
-        if (canvas) canvas.style.display = 'none';
+        return;
       }
-    } catch (e) {
-      loader.textContent = 'Failed to load chart data';
-      if (canvas) canvas.style.display = 'none';
+    } catch (err) {
+      console.warn('Chart load error for ' + range + ':', err);
+    }
+
+    // Fallback for 1D: use live price data to build a simple chart
+    if (range === '1D') {
+      var fallback = buildFallbackSeries();
+      if (fallback) {
+        renderPerfChart(fallback, range);
+        return;
+      }
+      if (returnEl) returnEl.textContent = 'Waiting for price data\u2026';
+    } else {
+      if (returnEl) returnEl.textContent = 'Historical data unavailable';
+    }
+  }
+
+  // Called after live prices arrive to render fallback chart if needed
+  function retryPerfChartIfEmpty() {
+    if (perfChartInstance) return;
+    if (perfCurrentRange !== '1D') return;
+    var fallback = buildFallbackSeries();
+    if (fallback) {
+      renderPerfChart(fallback, '1D');
     }
   }
 
@@ -1060,9 +1138,7 @@
     if (!container) return;
 
     var valueEl = document.getElementById('perfValue');
-    if (valueEl && PORTFOLIO_TOTAL > 0) {
-      valueEl.textContent = perfFmtValue(Math.round(PORTFOLIO_TOTAL));
-    }
+    if (valueEl) valueEl.textContent = perfFmtValue(PORTFOLIO_TOTAL);
 
     var tabs = document.querySelectorAll('#perfRangeTabs .perf-tab');
     tabs.forEach(function (tab) {
@@ -1074,6 +1150,7 @@
       });
     });
 
+    setupPerfChartEvents();
     await loadPerfChart('1D');
   }
 
@@ -1186,6 +1263,7 @@
         PORTFOLIO_TOTAL = portfolio.total;
         renderAll(portfolio, true);
         showPriceStatus('live', priceStatusText(allPrices));
+        retryPerfChartIfEmpty();
       } else if (!cached) {
         showPriceStatus('error');
       }
@@ -1206,16 +1284,14 @@
             PORTFOLIO_TOTAL = portfolio.total;
             renderAll(portfolio, true);
             showPriceStatus('live', priceStatusText(allPrices));
+            retryPerfChartIfEmpty();
           }
         } catch (e) { /* retry failed */ }
       }, 3000);
     }
 
     // Step 6: Initialize the performance chart (candle data)
-    // Delay to avoid Finnhub rate limits after quote fetches
-    if (isKeyConfigured()) {
-      setTimeout(function () { initPerfChart(); }, 2000);
-    }
+    initPerfChart();
   }
 
   function renderAll(portfolio, isLive) {
