@@ -957,24 +957,25 @@
     var from = now - 3 * 24 * 60 * 60; // 3-day lookback to cover weekends
     candleMissingTickers = [];
 
-    // Fetch 5-min candles for all tickers in parallel
+    // Fetch 5-min candles sequentially with delays to avoid burst rate-limit 403s
     var candles = {};
-    var fetches = [];
-    HOLDINGS.forEach(function (h) {
-      fetches.push(
-        fetchTickerCandles(h.ticker, '5', from, now).then(function (d) {
-          if (d) {
-            candles[h.ticker] = d;
-          } else {
-            candleMissingTickers.push(h.ticker);
-          }
-        }).catch(function (err) {
-          console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
+    for (var idx = 0; idx < HOLDINGS.length; idx++) {
+      var h = HOLDINGS[idx];
+      if (idx > 0) {
+        await new Promise(function (r) { setTimeout(r, 350); }); // 350ms between requests
+      }
+      try {
+        var d = await fetchTickerCandles(h.ticker, '5', from, now);
+        if (d) {
+          candles[h.ticker] = d;
+        } else {
           candleMissingTickers.push(h.ticker);
-        })
-      );
-    });
-    await Promise.all(fetches);
+        }
+      } catch (err) {
+        console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
+        candleMissingTickers.push(h.ticker);
+      }
+    }
 
     var gotCount = Object.keys(candles).length;
     console.log('[Candle] Got data for ' + gotCount + '/' + HOLDINGS.length + ' tickers. Missing: ' +
@@ -1464,7 +1465,11 @@
       showPriceStatus('cached');
     }
 
-    // Step 4: Fetch fresh prices from Finnhub (all tickers in parallel)
+    // Step 4: Start performance chart CONCURRENTLY with price fetching
+    // (like InvestmentThesis — don't wait for quotes to finish before requesting candles)
+    initPerfChart();
+
+    // Step 5: Fetch fresh prices from Finnhub (all tickers in parallel)
     try {
       var live = await fetchAllPrices();
       if (live) {
@@ -1482,7 +1487,7 @@
       if (!cached) showPriceStatus('error');
     }
 
-    // Step 5: Retry any missing tickers after a short delay
+    // Step 6: Retry any missing tickers after a short delay
     var missingCount = HOLDINGS.length - countPricedHoldings(allPrices);
     if (missingCount > 0) {
       setTimeout(async function () {
@@ -1500,9 +1505,6 @@
         } catch (e) { /* retry failed */ }
       }, 3000);
     }
-
-    // Step 6: Initialize the performance chart (candle data)
-    initPerfChart();
   }
 
   function renderAll(portfolio, isLive) {
