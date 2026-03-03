@@ -935,16 +935,27 @@
     var url = FINNHUB_BASE + '/stock/candle?symbol=' + encodeURIComponent(ticker) +
       '&resolution=' + resolution + '&from=' + from + '&to=' + to + '&token=' + FINNHUB_KEY;
     var res = await fetchWithTimeout(url, 12000);
-    if (!res.ok) throw new Error('Finnhub candle ' + res.status);
+    if (!res.ok) {
+      console.warn('[Candle] ' + ticker + ': HTTP ' + res.status);
+      throw new Error('Finnhub candle ' + res.status);
+    }
     var data = await res.json();
-    if (!data || data.s !== 'ok' || !data.c || !data.t) return null;
+    if (!data || data.s !== 'ok' || !data.c || !data.t) {
+      console.warn('[Candle] ' + ticker + ': no data (s=' + (data && data.s) + ')');
+      return null;
+    }
+    console.log('[Candle] ' + ticker + ': ' + data.t.length + ' points');
     return { t: data.t, c: data.c };
   }
+
+  // Track which tickers lack Finnhub candle data (for the note)
+  var candleMissingTickers = [];
 
   // Build 1D series from Finnhub 5-min candle data (same approach as InvestmentThesis)
   async function buildFinnhub1DSeries() {
     var now = Math.floor(Date.now() / 1000);
     var from = now - 3 * 24 * 60 * 60; // 3-day lookback to cover weekends
+    candleMissingTickers = [];
 
     // Fetch 5-min candles for all tickers in parallel
     var candles = {};
@@ -952,13 +963,22 @@
     HOLDINGS.forEach(function (h) {
       fetches.push(
         fetchTickerCandles(h.ticker, '5', from, now).then(function (d) {
-          if (d) candles[h.ticker] = d;
+          if (d) {
+            candles[h.ticker] = d;
+          } else {
+            candleMissingTickers.push(h.ticker);
+          }
         }).catch(function (err) {
           console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
+          candleMissingTickers.push(h.ticker);
         })
       );
     });
     await Promise.all(fetches);
+
+    var gotCount = Object.keys(candles).length;
+    console.log('[Candle] Got data for ' + gotCount + '/' + HOLDINGS.length + ' tickers. Missing: ' +
+      (candleMissingTickers.length > 0 ? candleMissingTickers.join(', ') : 'none'));
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -971,7 +991,11 @@
       }
     });
 
-    if (!baseTimestamps || baseTimestamps.length < 2) return null;
+    // Need at least ONE ticker with candle data to build the chart
+    if (!baseTimestamps || baseTimestamps.length < 2) {
+      console.warn('[Candle] No base timestamps found — all tickers returned no data');
+      return null;
+    }
 
     // Trim to last trading session — find the largest overnight gap
     var lastSessionStart = 0;
@@ -985,6 +1009,8 @@
     }
 
     // Build portfolio value at each timestamp
+    // Tickers without candle data use their current price (from quotes) or fallback
+    var cachedPrices = getCachedPrices();
     var series = [];
     for (var i = 0; i < baseTimestamps.length; i++) {
       var t = baseTimestamps[i];
@@ -995,7 +1021,9 @@
           var p = findNearestPrice(cd.t, cd.c, t);
           if (p != null) { value += h.shares * p; return; }
         }
-        value += h.shares * h.fallback;
+        // Use live price if available, otherwise fallback
+        var livePrice = cachedPrices && cachedPrices[h.ticker] && cachedPrices[h.ticker].price;
+        value += h.shares * (livePrice || h.fallback);
       });
       series.push({ time: t * 1000, value: value });
     }
@@ -1252,7 +1280,7 @@
 
     // Check in-memory series cache
     if (perfSeriesCache[range]) {
-      showMissingNote(range === '1D' ? [] : avMissingTickers);
+      showMissingNote(range === '1D' ? candleMissingTickers : avMissingTickers);
       renderPerfChart(perfSeriesCache[range], range);
       return;
     }
@@ -1268,7 +1296,7 @@
       // 1D: fetch 5-min candles from Finnhub (same as InvestmentThesis)
       try {
         series = await buildFinnhub1DSeries();
-        showMissingNote([]);
+        showMissingNote(candleMissingTickers);
         if (series && series.length >= 2) {
           perfSeriesCache[range] = series;
           renderPerfChart(series, range);
@@ -1278,9 +1306,10 @@
         console.warn('Finnhub 1D candle error:', err);
       }
       // Fallback: use Finnhub quote data (prevClose → current)
+      console.log('[Chart] Finnhub candles returned no usable data — falling back to quote-based 1D');
       var fallback = buildQuoteFallback1D();
       if (fallback) {
-        showMissingNote([]);
+        showMissingNote(candleMissingTickers.length > 0 ? candleMissingTickers : []);
         renderPerfChart(fallback, range);
         return;
       }
