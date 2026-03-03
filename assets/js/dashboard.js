@@ -782,6 +782,11 @@
     return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   }
 
+  // Small delay helper for staggering API calls
+  function delay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   // Fetch OHLC candles from Finnhub for a single ticker
   async function fetchTickerCandles(ticker, resolution, from, to) {
     var url = FINNHUB_BASE + '/stock/candle?symbol=' + encodeURIComponent(ticker) +
@@ -824,19 +829,19 @@
       from = now - 35 * 24 * 60 * 60;   // 35-day lookback
     }
 
-    // Fetch candles for all tickers in parallel
+    // Fetch candles in small batches to respect Finnhub rate limits
     var candles = {};
-    var fetches = [];
-
-    HOLDINGS.forEach(function (h) {
-      fetches.push(
-        fetchTickerCandles(h.ticker, resolution, from, now).then(function (d) {
+    var batchSize = 3;
+    for (var b = 0; b < HOLDINGS.length; b += batchSize) {
+      var batch = HOLDINGS.slice(b, b + batchSize);
+      var fetches = batch.map(function (h) {
+        return fetchTickerCandles(h.ticker, resolution, from, now).then(function (d) {
           if (d) candles[h.ticker] = d;
-        }).catch(function () {})
-      );
-    });
-
-    await Promise.all(fetches);
+        }).catch(function () {});
+      });
+      await Promise.all(fetches);
+      if (b + batchSize < HOLDINGS.length) await delay(300);
+    }
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -1028,24 +1033,23 @@
     if (!loader) {
       loader = document.createElement('div');
       loader.className = 'perf-loading';
-      loader.textContent = 'Loading chart\u2026';
       wrap.appendChild(loader);
     }
+    loader.textContent = 'Loading chart\u2026';
     loader.style.display = 'flex';
 
     try {
       var series = await buildPortfolioSeries(range);
-      loader.style.display = 'none';
-      if (canvas) canvas.style.display = 'block';
       if (series && series.length >= 2) {
+        loader.style.display = 'none';
+        if (canvas) canvas.style.display = 'block';
         renderPerfChart(series, range);
       } else {
-        loader.textContent = 'No chart data available';
-        loader.style.display = 'flex';
+        loader.textContent = 'No chart data available \u2014 market may be closed';
+        if (canvas) canvas.style.display = 'none';
       }
     } catch (e) {
-      loader.textContent = 'Failed to load chart';
-      loader.style.display = 'flex';
+      loader.textContent = 'Failed to load chart data';
       if (canvas) canvas.style.display = 'none';
     }
   }
@@ -1208,8 +1212,9 @@
     }
 
     // Step 6: Initialize the performance chart (candle data)
+    // Delay to avoid Finnhub rate limits after quote fetches
     if (isKeyConfigured()) {
-      initPerfChart();
+      setTimeout(function () { initPerfChart(); }, 2000);
     }
   }
 
