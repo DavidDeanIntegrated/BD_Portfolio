@@ -815,9 +815,9 @@
   /* ================================================================
      PERFORMANCE CHART
      ─────────────────────────────────────────────────────────────────
-     1D  — Built entirely from Finnhub /quote data (prevClose → current).
-           No extra API calls; matches the "Today" return in the table.
-     7D / 1M — Uses Alpha Vantage TIME_SERIES_DAILY.
+     1D  — Finnhub /stock/candle with 5-min resolution (same as
+           InvestmentThesis). Falls back to quote data if candles fail.
+     7D / 1M — Alpha Vantage TIME_SERIES_DAILY.
            Shows a note if any tickers could not be fetched.
   ================================================================ */
 
@@ -930,75 +930,116 @@
     return values[lo];
   }
 
-  // ── 1D series from Finnhub quote data (no extra API calls) ──
-  function build1DSeries() {
+  // ── Finnhub /stock/candle — 5-min intraday for 1D chart ──
+  async function fetchTickerCandles(ticker, resolution, from, to) {
+    var url = FINNHUB_BASE + '/stock/candle?symbol=' + encodeURIComponent(ticker) +
+      '&resolution=' + resolution + '&from=' + from + '&to=' + to + '&token=' + FINNHUB_KEY;
+    var res = await fetchWithTimeout(url, 12000);
+    if (!res.ok) throw new Error('Finnhub candle ' + res.status);
+    var data = await res.json();
+    if (!data || data.s !== 'ok' || !data.c || !data.t) return null;
+    return { t: data.t, c: data.c };
+  }
+
+  // Build 1D series from Finnhub 5-min candle data (same approach as InvestmentThesis)
+  async function buildFinnhub1DSeries() {
+    var now = Math.floor(Date.now() / 1000);
+    var from = now - 3 * 24 * 60 * 60; // 3-day lookback to cover weekends
+
+    // Fetch 5-min candles for all tickers in parallel
+    var candles = {};
+    var fetches = [];
+    HOLDINGS.forEach(function (h) {
+      fetches.push(
+        fetchTickerCandles(h.ticker, '5', from, now).then(function (d) {
+          if (d) candles[h.ticker] = d;
+        }).catch(function (err) {
+          console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
+        })
+      );
+    });
+    await Promise.all(fetches);
+
+    // Find base timestamps from the ticker with the most data points
+    var baseTimestamps = null;
+    var maxLen = 0;
+    HOLDINGS.forEach(function (h) {
+      var d = candles[h.ticker];
+      if (d && d.t && d.t.length > maxLen) {
+        maxLen = d.t.length;
+        baseTimestamps = d.t;
+      }
+    });
+
+    if (!baseTimestamps || baseTimestamps.length < 2) return null;
+
+    // Trim to last trading session — find the largest overnight gap
+    var lastSessionStart = 0;
+    for (var g = 1; g < baseTimestamps.length; g++) {
+      if (baseTimestamps[g] - baseTimestamps[g - 1] > 3600) {
+        lastSessionStart = g;
+      }
+    }
+    if (lastSessionStart > 0) {
+      baseTimestamps = baseTimestamps.slice(lastSessionStart);
+    }
+
+    // Build portfolio value at each timestamp
+    var series = [];
+    for (var i = 0; i < baseTimestamps.length; i++) {
+      var t = baseTimestamps[i];
+      var value = 0;
+      HOLDINGS.forEach(function (h) {
+        var cd = candles[h.ticker];
+        if (cd) {
+          var p = findNearestPrice(cd.t, cd.c, t);
+          if (p != null) { value += h.shares * p; return; }
+        }
+        value += h.shares * h.fallback;
+      });
+      series.push({ time: t * 1000, value: value });
+    }
+
+    return series;
+  }
+
+  // Fallback 1D series from Finnhub quote data (if candles fail)
+  function buildQuoteFallback1D() {
     var prices = getCachedPrices();
     if (!prices) return null;
 
-    var prevCloseTotal = 0;
-    var openTotal = 0;
-    var currentTotal = 0;
-    var count = 0;
+    var startValue = 0;
+    var endValue = 0;
+    var hasPrices = false;
 
     HOLDINGS.forEach(function (h) {
       var q = prices[h.ticker];
       if (q && q.price) {
-        prevCloseTotal += h.shares * (q.prevClose || q.price);
-        openTotal      += h.shares * (q.open || q.prevClose || q.price);
-        currentTotal   += h.shares * q.price;
-        count++;
+        startValue += h.shares * (q.prevClose || q.price);
+        endValue += h.shares * q.price;
+        hasPrices = true;
       } else {
-        prevCloseTotal += h.shares * h.fallback;
-        openTotal      += h.shares * h.fallback;
-        currentTotal   += h.shares * h.fallback;
+        startValue += h.shares * h.fallback;
+        endValue += h.shares * h.fallback;
       }
     });
 
-    if (count === 0) return null;
+    if (!hasPrices) return null;
 
-    // Build a smooth line: prevClose → open → current
     var now = Date.now();
     var today = new Date();
+    today.setHours(9, 30, 0, 0);
+    var marketOpen = today.getTime();
+    if (now < marketOpen) marketOpen -= 24 * 60 * 60 * 1000;
 
-    // Previous close at ~4 PM yesterday
-    var yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    // Skip weekends for previous close timestamp
-    var dow = yesterday.getDay();
-    if (dow === 0) yesterday.setDate(yesterday.getDate() - 2); // Sun → Fri
-    if (dow === 6) yesterday.setDate(yesterday.getDate() - 1); // Sat → Fri
-    yesterday.setHours(16, 0, 0, 0);
-    var prevCloseTime = yesterday.getTime();
-
-    // Market open at 9:30 AM today
-    var marketOpen = new Date(today);
-    marketOpen.setHours(9, 30, 0, 0);
-    var openTime = marketOpen.getTime();
-
-    // If before market open, shift to show yesterday's session
-    if (now < openTime) {
-      openTime -= 24 * 60 * 60 * 1000;
-      prevCloseTime -= 24 * 60 * 60 * 1000;
+    var points = [];
+    var steps = 20;
+    for (var i = 0; i <= steps; i++) {
+      var t = marketOpen + (now - marketOpen) * (i / steps);
+      var v = startValue + (endValue - startValue) * (i / steps);
+      points.push({ time: t, value: v });
     }
-
-    var series = [];
-
-    // Point 1: Previous close
-    series.push({ time: prevCloseTime, value: prevCloseTotal });
-
-    // Point 2: Market open
-    series.push({ time: openTime, value: openTotal });
-
-    // Points 3-N: Interpolated from open to current
-    var steps = 18;
-    for (var i = 1; i <= steps; i++) {
-      var frac = i / steps;
-      var t = openTime + (now - openTime) * frac;
-      var v = openTotal + (currentTotal - openTotal) * frac;
-      series.push({ time: t, value: v });
-    }
-
-    return series;
+    return points;
   }
 
   // ── 7D / 1M series from Alpha Vantage daily data ──
@@ -1224,15 +1265,25 @@
     var series = null;
 
     if (range === '1D') {
-      // 1D: use Finnhub quote data already fetched — zero extra API calls
-      series = build1DSeries();
-      showMissingNote([]);
-      if (series && series.length >= 2) {
-        perfSeriesCache[range] = series;
-        renderPerfChart(series, range);
+      // 1D: fetch 5-min candles from Finnhub (same as InvestmentThesis)
+      try {
+        series = await buildFinnhub1DSeries();
+        showMissingNote([]);
+        if (series && series.length >= 2) {
+          perfSeriesCache[range] = series;
+          renderPerfChart(series, range);
+          return;
+        }
+      } catch (err) {
+        console.warn('Finnhub 1D candle error:', err);
+      }
+      // Fallback: use Finnhub quote data (prevClose → current)
+      var fallback = buildQuoteFallback1D();
+      if (fallback) {
+        showMissingNote([]);
+        renderPerfChart(fallback, range);
         return;
       }
-      // Prices not loaded yet; will be retried via retryPerfChartIfEmpty
       if (returnEl) returnEl.textContent = 'Waiting for price data\u2026';
     } else {
       // 7D / 1M: use Alpha Vantage daily data
@@ -1252,16 +1303,14 @@
     }
   }
 
-  // Called after live prices arrive — rebuild 1D chart if it hasn't rendered yet
+  // Called after live prices arrive — update 1D chart with fresh quote fallback
   function retryPerfChartIfEmpty() {
-    // Clear stale 1D cache so it picks up new prices
-    delete perfSeriesCache['1D'];
+    if (perfChartInstance && perfSeriesCache['1D']) return; // candle chart already rendered
     if (perfCurrentRange !== '1D') return;
-    var series = build1DSeries();
-    if (series && series.length >= 2) {
-      perfSeriesCache['1D'] = series;
+    var fallback = buildQuoteFallback1D();
+    if (fallback) {
       showMissingNote([]);
-      renderPerfChart(series, '1D');
+      renderPerfChart(fallback, '1D');
     }
   }
 
