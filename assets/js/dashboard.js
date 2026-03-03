@@ -813,35 +813,41 @@
     return values[lo];
   }
 
-  // Build a portfolio value time series for a given range
-  async function buildPortfolioSeries(range) {
-    var now = Math.floor(Date.now() / 1000);
-    var resolution, from;
-
-    if (range === '1D') {
-      resolution = '5';
-      from = now - 3 * 24 * 60 * 60;   // 3-day lookback for weekends
-    } else if (range === '7D') {
-      resolution = '30';
-      from = now - 10 * 24 * 60 * 60;   // 10-day lookback
-    } else {
-      resolution = '60';
-      from = now - 35 * 24 * 60 * 60;   // 35-day lookback
-    }
-
-    // Fetch candles in small batches to respect Finnhub rate limits
+  // Fetch candles for all holdings in small batches
+  async function fetchAllCandles(resolution, from, to) {
     var candles = {};
     var batchSize = 3;
     for (var b = 0; b < HOLDINGS.length; b += batchSize) {
       var batch = HOLDINGS.slice(b, b + batchSize);
       var fetches = batch.map(function (h) {
-        return fetchTickerCandles(h.ticker, resolution, from, now).then(function (d) {
+        return fetchTickerCandles(h.ticker, resolution, from, to).then(function (d) {
           if (d) candles[h.ticker] = d;
         }).catch(function () {});
       });
       await Promise.all(fetches);
       if (b + batchSize < HOLDINGS.length) await delay(300);
     }
+    return candles;
+  }
+
+  // Build a portfolio value time series for a given range
+  async function buildPortfolioSeries(range) {
+    var now = Math.floor(Date.now() / 1000);
+
+    // Use daily candles — reliably supported on Finnhub free tier.
+    // Intraday resolutions (5/30/60) require premium.
+    var resolution = 'D';
+    var from;
+
+    if (range === '1D') {
+      from = now - 5 * 24 * 60 * 60;    // 5-day lookback (show last few trading days)
+    } else if (range === '7D') {
+      from = now - 12 * 24 * 60 * 60;   // 12-day lookback
+    } else {
+      from = now - 40 * 24 * 60 * 60;   // 40-day lookback
+    }
+
+    var candles = await fetchAllCandles(resolution, from, now);
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -856,17 +862,14 @@
 
     if (!baseTimestamps || baseTimestamps.length < 2) return null;
 
-    // Trim 1D to last trading session only (detect overnight gaps > 1 hour)
-    if (range === '1D' && baseTimestamps.length > 2) {
-      var lastSessionStart = 0;
-      for (var g = 1; g < baseTimestamps.length; g++) {
-        if (baseTimestamps[g] - baseTimestamps[g - 1] > 3600) {
-          lastSessionStart = g;
-        }
-      }
-      if (lastSessionStart > 0) {
-        baseTimestamps = baseTimestamps.slice(lastSessionStart);
-      }
+    // For 1D, show only the last 2 trading days of daily candles
+    if (range === '1D' && baseTimestamps.length > 3) {
+      baseTimestamps = baseTimestamps.slice(-3);
+    }
+
+    // For 7D, trim to last ~7 trading days
+    if (range === '7D' && baseTimestamps.length > 8) {
+      baseTimestamps = baseTimestamps.slice(-8);
     }
 
     // Build portfolio value at each timestamp
@@ -1006,9 +1009,6 @@
               callback: function (value, index) {
                 var ts = labels[index];
                 var d = new Date(ts);
-                if (range === '1D') {
-                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                }
                 return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
               }
             }
@@ -1045,7 +1045,7 @@
         if (canvas) canvas.style.display = 'block';
         renderPerfChart(series, range);
       } else {
-        loader.textContent = 'No chart data available \u2014 market may be closed';
+        loader.textContent = 'No chart data available';
         if (canvas) canvas.style.display = 'none';
       }
     } catch (e) {
