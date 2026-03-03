@@ -1227,6 +1227,83 @@
 }
 
 /* ================================================================
+   PORTFOLIO PERFORMANCE CHART
+================================================================ */
+.perf-container {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 28px 20px;
+}
+
+.perf-header {
+  margin-bottom: 12px;
+}
+
+.perf-value {
+  font-family: var(--font-sans);
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.perf-return {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 4px;
+  min-height: 1.3em;
+}
+
+.perf-return.perf-positive { color: var(--green); }
+.perf-return.perf-negative { color: var(--red); }
+
+.perf-range-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.perf-tab {
+  padding: 5px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-family: var(--font-sans);
+}
+
+.perf-tab:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.perf-tab.active {
+  background: var(--text-primary);
+  color: var(--bg-base);
+  border-color: var(--text-primary);
+}
+
+.perf-chart-wrap {
+  position: relative;
+  height: 240px;
+}
+
+.perf-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ================================================================
    DASHBOARD RESPONSIVE
 ================================================================ */
 @media (max-width: 900px) {
@@ -1253,4 +1330,7 @@
   .holdings-table td:nth-child(5),
   .holdings-table td:nth-child(6) { display: none; }
   .rec-grid { grid-template-columns: 1fr; }
+  .perf-container { padding: 20px 16px 16px; }
+  .perf-value { font-size: 1.6rem; }
+  .perf-chart-wrap { height: 200px; }
 }
