@@ -779,6 +779,97 @@
   var PORTFOLIO_TOTAL = 0;
   var perfSeriesCache = {};
 
+  /* ================================================================
+     ALPHA VANTAGE — Historical candle data for the performance chart
+     Finnhub is kept for live quotes; Alpha Vantage provides the
+     TIME_SERIES_DAILY endpoint used for 1D / 7D / 1M chart views.
+  ================================================================ */
+  var AV_KEY = 'FPC34YCBMQ39AULC';
+  var AV_BASE = 'https://www.alphavantage.co/query';
+  var AV_CACHE_KEY = 'bd_av_daily';
+  var AV_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+  // In-memory store for daily candles fetched this session
+  var avDailyCandles = null;
+
+  function avDelay(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  // Fetch TIME_SERIES_DAILY for a single ticker
+  async function fetchAVDaily(ticker) {
+    var url = AV_BASE + '?function=TIME_SERIES_DAILY&symbol=' + encodeURIComponent(ticker) +
+      '&outputsize=compact&apikey=' + AV_KEY;
+    var res = await fetchWithTimeout(url, 15000);
+    if (!res.ok) throw new Error('AV HTTP ' + res.status);
+    var data = await res.json();
+    // Alpha Vantage returns a 'Note' or 'Information' key on rate limit
+    if (data['Note'] || data['Information']) throw new Error('AV rate limited');
+    var ts = data['Time Series (Daily)'];
+    if (!ts) return null;
+    var timestamps = [];
+    var closes = [];
+    // Keys come as "YYYY-MM-DD"; sort ascending
+    var dates = Object.keys(ts).sort();
+    dates.forEach(function (d) {
+      // Parse as market close 4 PM ET (UTC-5 / UTC-4 DST — close enough)
+      timestamps.push(Math.floor(new Date(d + 'T16:00:00-05:00').getTime() / 1000));
+      closes.push(parseFloat(ts[d]['4. close']));
+    });
+    return { t: timestamps, c: closes };
+  }
+
+  // Load daily candles from localStorage cache
+  function loadAVCache() {
+    try {
+      var raw = localStorage.getItem(AV_CACHE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (Date.now() - parsed.ts > AV_CACHE_TTL) return null;
+      return parsed.candles;
+    } catch (e) { return null; }
+  }
+
+  // Save daily candles to localStorage cache
+  function saveAVCache(candles) {
+    try {
+      localStorage.setItem(AV_CACHE_KEY, JSON.stringify({ ts: Date.now(), candles: candles }));
+    } catch (e) { /* quota exceeded or private browsing */ }
+  }
+
+  // Fetch daily candles for all holdings (sequential with small delays)
+  async function fetchAllDailyCandles() {
+    // Return in-memory cache if available
+    if (avDailyCandles) return avDailyCandles;
+
+    // Check localStorage cache
+    var cached = loadAVCache();
+    if (cached) {
+      avDailyCandles = cached;
+      return cached;
+    }
+
+    // Fetch from Alpha Vantage — sequential with 400ms gaps to respect rate limits
+    var candles = {};
+    for (var i = 0; i < HOLDINGS.length; i++) {
+      var ticker = HOLDINGS[i].ticker;
+      try {
+        var d = await fetchAVDaily(ticker);
+        if (d) candles[ticker] = d;
+      } catch (err) {
+        console.warn('AV daily fetch failed for ' + ticker + ':', err.message || err);
+      }
+      // Small delay between requests
+      if (i < HOLDINGS.length - 1) await avDelay(400);
+    }
+
+    if (Object.keys(candles).length > 0) {
+      avDailyCandles = candles;
+      saveAVCache(candles);
+    }
+    return candles;
+  }
+
   function perfFmtValue(val) {
     return '$' + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
@@ -787,17 +878,6 @@
     if (range === '1D') return 'Today';
     if (range === '7D') return 'Past week';
     return 'Past month';
-  }
-
-  // Fetch OHLC candles from Finnhub for a single ticker
-  async function fetchTickerCandles(ticker, resolution, from, to) {
-    var url = FINNHUB_BASE + '/stock/candle?symbol=' + encodeURIComponent(ticker) +
-      '&resolution=' + resolution + '&from=' + from + '&to=' + to + '&token=' + FINNHUB_KEY;
-    var res = await fetchWithTimeout(url, 12000);
-    if (!res.ok) throw new Error('Finnhub candle ' + res.status);
-    var data = await res.json();
-    if (!data || data.s !== 'ok' || !data.c || !data.t) return null;
-    return { t: data.t, c: data.c };
   }
 
   // Binary search: find nearest price at a target timestamp
@@ -815,35 +895,9 @@
     return values[lo];
   }
 
-  // Build a portfolio value time series for a given range
+  // Build a portfolio value time series for a given range using Alpha Vantage daily data
   async function buildPortfolioSeries(range) {
-    var now = Math.floor(Date.now() / 1000);
-    var resolution, from;
-
-    if (range === '1D') {
-      resolution = '5';
-      from = now - 3 * 24 * 60 * 60;
-    } else if (range === '7D') {
-      resolution = '30';
-      from = now - 8 * 24 * 60 * 60;
-    } else {
-      resolution = '60';
-      from = now - 32 * 24 * 60 * 60;
-    }
-
-    // Fetch all candles in parallel
-    var candles = {};
-    var fetches = [];
-    HOLDINGS.forEach(function (h) {
-      fetches.push(
-        fetchTickerCandles(h.ticker, resolution, from, now).then(function (d) {
-          if (d) candles[h.ticker] = d;
-        }).catch(function (err) {
-          console.warn('Candle fetch failed for ' + h.ticker + ':', err.message || err);
-        })
-      );
-    });
-    await Promise.all(fetches);
+    var candles = await fetchAllDailyCandles();
 
     // Find base timestamps from the ticker with the most data points
     var baseTimestamps = null;
@@ -852,23 +906,23 @@
       var d = candles[h.ticker];
       if (d && d.t && d.t.length > maxLen) {
         maxLen = d.t.length;
-        baseTimestamps = d.t;
+        baseTimestamps = d.t.slice();
       }
     });
 
     if (!baseTimestamps || baseTimestamps.length < 2) return null;
 
-    // For 1D: trim to only the last trading session
-    if (range === '1D' && baseTimestamps.length > 2) {
-      var lastSessionStart = 0;
-      for (var g = 1; g < baseTimestamps.length; g++) {
-        if (baseTimestamps[g] - baseTimestamps[g - 1] > 3600) {
-          lastSessionStart = g;
-        }
-      }
-      if (lastSessionStart > 0) {
-        baseTimestamps = baseTimestamps.slice(lastSessionStart);
-      }
+    // Trim timestamps based on range
+    var trimCount;
+    if (range === '1D') {
+      trimCount = 3;   // last 3 trading days
+    } else if (range === '7D') {
+      trimCount = 7;   // last 7 trading days
+    } else {
+      trimCount = 22;  // ~1 month of trading days
+    }
+    if (baseTimestamps.length > trimCount) {
+      baseTimestamps = baseTimestamps.slice(-trimCount);
     }
 
     // Build portfolio value at each timestamp
@@ -892,7 +946,7 @@
     return series;
   }
 
-  // Build a minimal 1D series from live quote data (fallback when candles fail)
+  // Build a minimal 1D series from live quote data (fallback when AV fails)
   function buildFallbackSeries() {
     var cached = getCachedPrices();
     if (!cached) return null;
@@ -1052,9 +1106,6 @@
               callback: function (value, index) {
                 var ts = labels[index];
                 var d = new Date(ts);
-                if (range === '1D') {
-                  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                }
                 return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
               }
             }
@@ -1084,7 +1135,7 @@
     });
   }
 
-  // Load a specific range (with cache)
+  // Load a specific range (with series cache)
   async function loadPerfChart(range) {
     var returnEl = document.getElementById('perfReturn');
 
