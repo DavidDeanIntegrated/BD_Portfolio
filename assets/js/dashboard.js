@@ -1168,14 +1168,18 @@
   };
 
   // ── Header value + return display ──
-  function updatePerfHeader(currentVal, startVal, range) {
+  // isHover: true when user is hovering over a chart point (show that point's value)
+  //          false or omitted for resting state (show live portfolio total)
+  function updatePerfHeader(currentVal, startVal, range, isHover) {
     var valueEl = document.getElementById('perfValue');
     var returnEl = document.getElementById('perfReturn');
     if (!valueEl || !returnEl) return;
 
-    valueEl.textContent = perfFmtValue(currentVal);
+    // When hovering, show the hovered point value; at rest, show live portfolio total
+    var displayVal = isHover ? currentVal : (PORTFOLIO_TOTAL || currentVal);
+    valueEl.textContent = perfFmtValue(displayVal);
 
-    var delta = currentVal - startVal;
+    var delta = displayVal - startVal;
     var pct = startVal ? (delta / startVal * 100) : 0;
     var sign = delta >= 0 ? '+' : '-';
     var colorClass = delta >= 0 ? 'perf-positive' : 'perf-negative';
@@ -1244,14 +1248,14 @@
               if (!context.tooltip || context.tooltip.opacity === 0) {
                 chart._crosshairX = null;
                 chart.draw();
-                updatePerfHeader(endVal, startVal, range);
+                updatePerfHeader(endVal, startVal, range, false); // resting: show live total
                 return;
               }
               var pts = context.tooltip.dataPoints;
               if (pts && pts.length) {
                 chart._crosshairX = pts[0].element.x;
                 chart.draw();
-                updatePerfHeader(pts[0].raw, startVal, range);
+                updatePerfHeader(pts[0].raw, startVal, range, true); // hovering: show point value
               }
             }
           }
